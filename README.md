@@ -19,6 +19,25 @@ wallet.approve_if_needed(decision)
 wallet.settle()
 ```
 
+OpenAI Agents SDK adapter:
+
+```python
+from agents import Agent
+from agentpay import Wallet, create_openai_agents_tools
+
+wallet = Wallet.create(owner="research-agent", daily_limit=100, base_url="https://nornr.com")
+agent = Agent(name="Research agent", tools=create_openai_agents_tools(wallet))
+```
+
+LangChain adapter:
+
+```python
+from agentpay import Wallet, create_langchain_tools
+
+wallet = Wallet.create(owner="ops-agent", daily_limit=100, base_url="https://nornr.com")
+tools = create_langchain_tools(wallet)
+```
+
 ```python
 from agentpay import AgentPayClient, Wallet
 
@@ -149,5 +168,7 @@ Examples:
 
 - `examples/python/wallet_quickstart.py`
 - `examples/python/basic_workflow.py`
+- `examples/python/openai_agents_sdk_wallet.py`
 - `examples/python/langchain_agent_budget.py`
+- `examples/python/langchain_wallet_tools.py`
 - `examples/python/crewai_slack_approvals.py`
