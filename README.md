@@ -3,8 +3,24 @@
 Teknisk not:
 Python-paketet heter fortfarande `agentpay` och klienten `AgentPayClient` tills vidare for bakatkompatibilitet.
 
+Tre-raders quickstart:
+
 ```python
-from agentpay import AgentPayClient
+from agentpay import Wallet
+
+wallet = Wallet.create(owner="research-agent", daily_limit=100, base_url="https://nornr.com")
+decision = wallet.pay(amount=5, to="openai", purpose="model inference")
+```
+
+Om `decision["requiresApproval"]` ar `True` kan du godkanna i samma facade:
+
+```python
+wallet.approve_if_needed(decision)
+wallet.settle()
+```
+
+```python
+from agentpay import AgentPayClient, Wallet
 
 public_client = AgentPayClient(base_url="http://127.0.0.1:3000")
 
@@ -131,6 +147,7 @@ pip install -e packages/sdk-py
 
 Examples:
 
+- `examples/python/wallet_quickstart.py`
 - `examples/python/basic_workflow.py`
 - `examples/python/langchain_agent_budget.py`
 - `examples/python/crewai_slack_approvals.py`

@@ -186,11 +186,11 @@ class AgentPayClient:
     def get_reconciliation(self) -> Any:
         return self._request("/api/reconciliation")
 
-    def approve_intent(self, approval_id: str) -> Any:
-        return self._request(f"/api/approvals/{approval_id}/approve", _RequestOptions(method="POST"))
+    def approve_intent(self, approval_id: str, payload: dict[str, Any] | None = None) -> Any:
+        return self._request(f"/api/approvals/{approval_id}/approve", _RequestOptions(method="POST", body=payload or {}))
 
-    def reject_intent(self, approval_id: str) -> Any:
-        return self._request(f"/api/approvals/{approval_id}/reject", _RequestOptions(method="POST"))
+    def reject_intent(self, approval_id: str, payload: dict[str, Any] | None = None) -> Any:
+        return self._request(f"/api/approvals/{approval_id}/reject", _RequestOptions(method="POST", body=payload or {}))
 
     def list_ledger(self, agent_id: str) -> Any:
         return self._request(f"/api/agents/{agent_id}/ledger")
@@ -256,3 +256,155 @@ class AgentPayClient:
             raise AgentPayError(message or f"Request failed with status {exc.code}", status_code=exc.code, payload=payload) from exc
         except error.URLError as exc:
             raise AgentPayError(f"Request failed: {exc.reason}") from exc
+
+
+def _looks_like_evm_address(value: Any) -> bool:
+    return isinstance(value, str) and value.startswith("0x") and len(value) == 42
+
+
+def _first_agent(bootstrap: dict[str, Any]) -> dict[str, Any]:
+    agents = bootstrap.get("agents") or []
+    if not agents:
+        raise AgentPayError("Wallet bootstrap did not return any agents")
+    return agents[0]
+
+
+def _find_pending_approval(bootstrap: dict[str, Any], payment_intent_id: str) -> dict[str, Any] | None:
+    approvals = bootstrap.get("approvals") or []
+    return next((item for item in approvals if item.get("paymentIntentId") == payment_intent_id), None)
+
+
+@dataclass
+class Wallet:
+    client: AgentPayClient
+    workspace: dict[str, Any]
+    agent: dict[str, Any]
+    wallet: dict[str, Any] | None
+    api_key: dict[str, Any] | None
+    policy: dict[str, Any] | None = None
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        owner: str,
+        daily_limit: float = 100,
+        base_url: str = "http://127.0.0.1:3000",
+        workspace_name: str | None = None,
+        require_approval_above: float | None = None,
+        max_transaction: float | None = None,
+        whitelist: list[str] | None = None,
+        auto_pause_on_anomaly: bool = False,
+        review_on_anomaly: bool = False,
+        starting_balance: float = 100,
+    ) -> "Wallet":
+        public_client = AgentPayClient(base_url=base_url)
+        onboarding = public_client.onboard(
+            {
+                "workspaceName": workspace_name or f"{owner} workspace",
+                "agentName": owner,
+                "dailyLimitUsd": daily_limit,
+                "requireApprovalOverUsd": require_approval_above,
+                "maxTransactionUsd": max_transaction,
+                "counterpartyAllowlist": whitelist,
+                "autoPauseOnAnomaly": auto_pause_on_anomaly,
+                "reviewOnAnomaly": review_on_anomaly,
+                "startingBalanceUsd": starting_balance,
+            }
+        )
+        client = public_client.with_api_key(onboarding["apiKey"]["key"])
+        return cls(
+            client=client,
+            workspace=onboarding["workspace"],
+            agent=onboarding["agent"],
+            wallet=onboarding.get("wallet"),
+            api_key=onboarding.get("apiKey"),
+            policy=onboarding.get("policy"),
+        )
+
+    @classmethod
+    def connect(
+        cls,
+        *,
+        api_key: str,
+        base_url: str = "http://127.0.0.1:3000",
+        agent_id: str | None = None,
+    ) -> "Wallet":
+        client = AgentPayClient(base_url=base_url, api_key=api_key)
+        bootstrap = client.get_bootstrap()
+        agent = next((item for item in bootstrap.get("agents", []) if item.get("id") == agent_id), None) if agent_id else None
+        return cls(
+            client=client,
+            workspace=bootstrap["workspace"],
+            agent=agent or _first_agent(bootstrap),
+            wallet=bootstrap.get("wallet"),
+            api_key={"key": api_key},
+        )
+
+    @property
+    def agent_id(self) -> str:
+        return self.agent["id"]
+
+    @property
+    def workspace_id(self) -> str:
+        return self.workspace["id"]
+
+    def refresh(self) -> dict[str, Any]:
+        bootstrap = self.client.get_bootstrap()
+        self.workspace = bootstrap["workspace"]
+        self.agent = next((item for item in bootstrap.get("agents", []) if item.get("id") == self.agent_id), _first_agent(bootstrap))
+        self.wallet = bootstrap.get("wallet")
+        return bootstrap
+
+    def pay(
+        self,
+        *,
+        amount: float,
+        to: str,
+        purpose: str | None = None,
+        counterparty: str | None = None,
+        budget_tags: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        destination = to if _looks_like_evm_address(to) else None
+        resolved_counterparty = counterparty or (to if not destination else "external")
+        result = self.client.create_payment_intent(
+            {
+                "agentId": self.agent_id,
+                "amountUsd": amount,
+                "counterparty": resolved_counterparty,
+                "destination": destination,
+                "budgetTags": budget_tags,
+                "purpose": purpose or f"agent payment to {resolved_counterparty}",
+            }
+        )
+        payment_intent = result.get("paymentIntent") or {}
+        if payment_intent.get("status") == "queued":
+            bootstrap = self.client.get_bootstrap()
+            approval = _find_pending_approval(bootstrap, payment_intent.get("id", ""))
+            if approval:
+                result["approval"] = approval
+            result["requiresApproval"] = approval is not None
+        else:
+            result["requiresApproval"] = False
+        return result
+
+    def approve_if_needed(self, payment: dict[str, Any], *, comment: str | None = None) -> dict[str, Any]:
+        approval = payment.get("approval")
+        if approval:
+            return self.client.approve_intent(approval["id"], {"comment": comment} if comment else {})
+        payment_intent = payment.get("paymentIntent") or {}
+        if payment_intent.get("status") != "queued":
+            return payment
+        bootstrap = self.client.get_bootstrap()
+        pending_approval = _find_pending_approval(bootstrap, payment_intent["id"])
+        if not pending_approval:
+            raise AgentPayError("No pending approval found for payment intent")
+        return self.client.approve_intent(pending_approval["id"], {"comment": comment} if comment else {})
+
+    def balance(self) -> dict[str, Any]:
+        wallet_state = self.client.get_wallet()
+        self.wallet = wallet_state
+        return wallet_state
+
+    def settle(self) -> dict[str, Any]:
+        return self.client.run_settlement()
