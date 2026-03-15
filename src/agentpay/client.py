@@ -18,6 +18,7 @@ class _RequestOptions:
     method: str = "GET"
     body: Any = None
     authenticated: bool = True
+    parse_json: bool = True
 
 
 class AgentPayClient:
@@ -39,6 +40,30 @@ class AgentPayClient:
 
     def create_policy(self, agent_id: str, payload: dict[str, Any]) -> Any:
         return self._request(f"/api/agents/{agent_id}/policies", _RequestOptions(method="POST", body=payload))
+
+    def list_policy_templates(self) -> Any:
+        return self._request("/api/policy-templates")
+
+    def list_api_key_templates(self) -> Any:
+        return self._request("/api/api-key-templates")
+
+    def list_budget_caps(self) -> Any:
+        return self._request("/api/budget-caps")
+
+    def create_budget_cap(self, payload: dict[str, Any]) -> Any:
+        return self._request("/api/budget-caps", _RequestOptions(method="POST", body=payload))
+
+    def simulate_policy(self, payload: dict[str, Any]) -> Any:
+        return self._request("/api/policies/simulate", _RequestOptions(method="POST", body=payload))
+
+    def diff_policy(self, payload: dict[str, Any]) -> Any:
+        return self._request("/api/policies/diff", _RequestOptions(method="POST", body=payload))
+
+    def list_anomalies(self) -> Any:
+        return self._request("/api/anomalies")
+
+    def update_anomaly(self, anomaly_id: str, payload: dict[str, Any]) -> Any:
+        return self._request(f"/api/anomalies/{anomaly_id}", _RequestOptions(method="POST", body=payload))
 
     def create_payment_intent(self, payload: dict[str, Any]) -> Any:
         return self._request("/api/payments/intents", _RequestOptions(method="POST", body=payload))
@@ -94,8 +119,24 @@ class AgentPayClient:
     def drain_webhooks(self) -> Any:
         return self._request("/api/webhooks/drain", _RequestOptions(method="POST"))
 
+    def test_webhook(self, endpoint_id: str, payload: dict[str, Any] | None = None) -> Any:
+        return self._request(
+            f"/api/webhooks/{endpoint_id}/test",
+            _RequestOptions(method="POST", body=payload or {"drainNow": True}),
+        )
+
+    def replay_webhook(self, endpoint_id: str, payload: dict[str, Any]) -> Any:
+        return self._request(f"/api/webhooks/{endpoint_id}/replay", _RequestOptions(method="POST", body=payload))
+
     def export_audit(self) -> Any:
         return self._request("/api/audit/export")
+
+    def get_cost_report(self, fmt: str = "json") -> Any:
+        return self._request(f"/api/reporting/costs?format={fmt}", _RequestOptions(parse_json=fmt == "json"))
+
+    def get_monthly_statement(self, month: str | None = None) -> Any:
+        suffix = f"?month={month}" if month else ""
+        return self._request(f"/api/statements/monthly{suffix}")
 
     def list_agreements(self) -> Any:
         return self._request("/api/agreements")
@@ -157,8 +198,30 @@ class AgentPayClient:
     def list_receipts(self, agent_id: str) -> Any:
         return self._request(f"/api/agents/{agent_id}/receipts")
 
-    def create_api_key(self, label: str) -> Any:
-        return self._request("/api/api-keys", _RequestOptions(method="POST", body={"label": label}))
+    def attach_receipt_evidence(self, receipt_id: str, payload: dict[str, Any]) -> Any:
+        return self._request(f"/api/receipts/{receipt_id}/evidence", _RequestOptions(method="POST", body=payload))
+
+    def export_cost_report(self, fmt: str = "csv") -> Any:
+        return self._request(f"/api/reporting/costs?format={fmt}", _RequestOptions(parse_json=fmt == "json"))
+
+    def list_api_keys(self) -> Any:
+        return self._request("/api/api-keys")
+
+    def create_api_key(self, payload: str | dict[str, Any]) -> Any:
+        body = {"label": payload} if isinstance(payload, str) else payload
+        return self._request("/api/api-keys", _RequestOptions(method="POST", body=body))
+
+    def revoke_api_key(self, api_key_id: str, payload: dict[str, Any] | None = None) -> Any:
+        return self._request(
+            f"/api/api-keys/{api_key_id}/revoke",
+            _RequestOptions(method="POST", body=payload or {}),
+        )
+
+    def rotate_api_key(self, api_key_id: str, payload: dict[str, Any] | None = None) -> Any:
+        return self._request(
+            f"/api/api-keys/{api_key_id}/rotate",
+            _RequestOptions(method="POST", body=payload or {}),
+        )
 
     def _request(self, pathname: str, options: _RequestOptions = _RequestOptions()) -> Any:
         headers: dict[str, str] = {}
@@ -183,7 +246,9 @@ class AgentPayClient:
         try:
             with request.urlopen(req) as response:
                 payload = response.read().decode("utf-8")
-                return json.loads(payload) if payload else None
+                if not payload:
+                    return None
+                return json.loads(payload) if options.parse_json else payload
         except error.HTTPError as exc:
             body = exc.read().decode("utf-8")
             payload = json.loads(body) if body else None

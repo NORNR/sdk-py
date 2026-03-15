@@ -18,6 +18,9 @@ onboarding = public_client.onboard(
 
 client = public_client.with_api_key(onboarding["apiKey"]["key"])
 bootstrap = client.get_bootstrap()
+policy_templates = client.list_policy_templates()
+api_key_templates = client.list_api_key_templates()
+caps = client.list_budget_caps()
 
 client.update_identity(
     {
@@ -40,6 +43,12 @@ client.create_payment_intent(
         "amountUsd": 5,
         "counterparty": "openai",
         "destination": "0x1111111111111111111111111111111111111111",
+        "budgetTags": {
+            "team": "growth",
+            "project": "agent-wallet-rollout",
+            "customer": "atlas-enterprise",
+            "costCenter": "ai-rnd",
+        },
         "purpose": "model inference",
     }
 )
@@ -70,6 +79,48 @@ client.release_milestone(
 
 client.run_settlement()
 reputation = client.get_reputation()
+cost_report = client.get_cost_report()
+cost_report_csv = client.export_cost_report("csv")
+scoped_key = client.create_api_key(
+    {
+        "label": "observer-key",
+        "templateId": "observer",
+    }
+)
+rotated_key = client.rotate_api_key(scoped_key["id"])
+client.create_budget_cap(
+    {
+        "dimension": "team",
+        "value": "growth",
+        "limitUsd": 100,
+        "action": "queue",
+    }
+)
+simulation = client.simulate_policy(
+    {
+        "agentId": bootstrap["agents"][0]["id"],
+        "templateId": "production_guarded",
+    }
+)
+policy_diff = client.diff_policy(
+    {
+        "agentId": bootstrap["agents"][0]["id"],
+        "templateId": "production_guarded",
+        "mode": "shadow",
+    }
+)
+anomalies = client.list_anomalies()
+statement = client.get_monthly_statement()
+
+client.create_webhook(
+    {
+        "label": "slack-approvals",
+        "url": "simulate://slack-approvals",
+        "deliveryMode": "slack",
+        "publicBaseUrl": "http://127.0.0.1:3000",
+        "events": ["approval.created"],
+    }
+)
 ```
 
 Install locally:
@@ -77,3 +128,9 @@ Install locally:
 ```bash
 pip install -e packages/sdk-py
 ```
+
+Examples:
+
+- `examples/python/basic_workflow.py`
+- `examples/python/langchain_agent_budget.py`
+- `examples/python/crewai_slack_approvals.py`
