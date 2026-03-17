@@ -1,180 +1,111 @@
-# NORNR Python SDK
+# agentpay
 
-Teknisk not:
-Python-paketet heter fortfarande `agentpay` och klienten `AgentPayClient` tills vidare for bakatkompatibilitet.
+Python SDK for [NORNR](https://nornr.com) — spend governance for AI agents.
 
-Install from this repo today:
+NORNR sits between agent intent and real settlement. Policy decides approved / queued / blocked. Every decision leaves a signed audit trail.
 
-```bash
-pip install -e packages/sdk-py
-```
+---
 
-When the package is published publicly, the install command will be:
+## Install
 
 ```bash
 pip install agentpay
 ```
 
-Tre-raders quickstart:
+---
+
+## Quickstart
 
 ```python
 from agentpay import Wallet
 
-wallet = Wallet.create(owner="research-agent", daily_limit=100, base_url="https://nornr.com")
-decision = wallet.pay(amount=5, to="openai", purpose="model inference")
+wallet = Wallet.create(
+    owner="research-agent",
+    daily_limit=100,
+    require_approval_above=25,
+    base_url="https://nornr.com",
+)
+
+decision = wallet.pay(
+    amount=12.50,
+    to="openai",
+    purpose="model inference",
+)
+
+if decision.get("requiresApproval"):
+    wallet.approve_if_needed(decision)
 ```
 
-Om `decision["requiresApproval"]` ar `True` kan du godkanna i samma facade:
+---
+
+## Connect an existing workspace
 
 ```python
-wallet.approve_if_needed(decision)
-wallet.settle()
+wallet = Wallet.connect(
+    api_key=os.environ["NORNR_API_KEY"],
+    agent_id="agent_abc123",
+)
 ```
 
-OpenAI Agents SDK adapter:
+---
+
+## Works with your agent framework
 
 ```python
+# OpenAI Agents SDK
 from agents import Agent
 from agentpay import Wallet, create_openai_agents_tools
 
 wallet = Wallet.create(owner="research-agent", daily_limit=100, base_url="https://nornr.com")
 agent = Agent(name="Research agent", tools=create_openai_agents_tools(wallet))
-```
 
-LangChain adapter:
-
-```python
+# LangChain
 from agentpay import Wallet, create_langchain_tools
 
 wallet = Wallet.create(owner="ops-agent", daily_limit=100, base_url="https://nornr.com")
 tools = create_langchain_tools(wallet)
+
+# CrewAI
+from agentpay import Wallet, create_crewai_tools
+
+wallet = Wallet.create(owner="crew-agent", daily_limit=100, base_url="https://nornr.com")
+tools = create_crewai_tools(wallet)
 ```
+
+---
+
+## Full client
 
 ```python
-from agentpay import AgentPayClient, Wallet
+from agentpay import AgentPayClient
 
-public_client = AgentPayClient(base_url="http://127.0.0.1:3000")
+client = AgentPayClient(base_url="https://nornr.com").with_api_key(os.environ["NORNR_API_KEY"])
 
-onboarding = public_client.onboard(
-    {
-        "workspaceName": "Atlas Agents",
-        "agentName": "research-agent",
-        "dailyLimitUsd": 50,
-    }
-)
+# Intents
+client.create_payment_intent({"agentId": agent_id, "amountUsd": 5, "counterparty": "openai", "purpose": "inference"})
 
-client = public_client.with_api_key(onboarding["apiKey"]["key"])
-bootstrap = client.get_bootstrap()
-policy_templates = client.list_policy_templates()
-api_key_templates = client.list_api_key_templates()
-caps = client.list_budget_caps()
+# Budget controls
+client.create_budget_cap({"dimension": "team", "value": "growth", "limitUsd": 500, "action": "queue"})
 
-client.update_identity(
-    {
-        "legalName": "Atlas Agents AB",
-        "contactEmail": "owner@atlasagents.ai",
-        "jurisdiction": "SE",
-    }
-)
+# Audit
+client.export_audit()
+client.get_cost_report()
+client.get_monthly_statement()
 
-client.create_deposit(
-    {
-        "amountUsd": 25,
-        "source": "bank-transfer",
-    }
-)
-
-client.create_payment_intent(
-    {
-        "agentId": bootstrap["agents"][0]["id"],
-        "amountUsd": 5,
-        "counterparty": "openai",
-        "destination": "0x1111111111111111111111111111111111111111",
-        "budgetTags": {
-            "team": "growth",
-            "project": "agent-wallet-rollout",
-            "customer": "atlas-enterprise",
-            "costCenter": "ai-rnd",
-        },
-        "purpose": "model inference",
-    }
-)
-
-agreement = client.create_agreement(
-    {
-        "buyerAgentId": bootstrap["agents"][0]["id"],
-        "title": "Dataset scrape engagement",
-        "counterpartyName": "scraper-agent",
-        "counterpartyDestination": "0x2222222222222222222222222222222222222222",
-        "milestones": [
-            {"title": "Collect URLs", "amountUsd": 12},
-            {"title": "Normalize output", "amountUsd": 8},
-        ],
-    }
-)
-
-client.submit_milestone_proof(
-    agreement["agreement"]["id"],
-    agreement["agreement"]["milestones"][0]["id"],
-    {"summary": "Output bundle uploaded"},
-)
-
-client.release_milestone(
-    agreement["agreement"]["id"],
-    agreement["agreement"]["milestones"][0]["id"],
-)
-
-client.run_settlement()
-reputation = client.get_reputation()
-cost_report = client.get_cost_report()
-cost_report_csv = client.export_cost_report("csv")
-scoped_key = client.create_api_key(
-    {
-        "label": "observer-key",
-        "templateId": "observer",
-    }
-)
-rotated_key = client.rotate_api_key(scoped_key["id"])
-client.create_budget_cap(
-    {
-        "dimension": "team",
-        "value": "growth",
-        "limitUsd": 100,
-        "action": "queue",
-    }
-)
-simulation = client.simulate_policy(
-    {
-        "agentId": bootstrap["agents"][0]["id"],
-        "templateId": "production_guarded",
-    }
-)
-policy_diff = client.diff_policy(
-    {
-        "agentId": bootstrap["agents"][0]["id"],
-        "templateId": "production_guarded",
-        "mode": "shadow",
-    }
-)
-anomalies = client.list_anomalies()
-statement = client.get_monthly_statement()
-
-client.create_webhook(
-    {
-        "label": "slack-approvals",
-        "url": "simulate://slack-approvals",
-        "deliveryMode": "slack",
-        "publicBaseUrl": "http://127.0.0.1:3000",
-        "events": ["approval.created"],
-    }
-)
+# Anomalies
+client.list_anomalies()
 ```
 
-Examples:
+---
 
-- `examples/python/wallet_quickstart.py`
-- `examples/python/basic_workflow.py`
-- `examples/python/openai_agents_sdk_wallet.py`
-- `examples/python/langchain_agent_budget.py`
-- `examples/python/langchain_wallet_tools.py`
-- `examples/python/crewai_slack_approvals.py`
+## Links
+
+- [nornr.com](https://nornr.com)
+- [Control room](https://nornr.com/app)
+- [TypeScript SDK](https://github.com/NORNR/sdk-ts)
+
+---
+
+## License
+
+MIT
