@@ -3,6 +3,18 @@
 Teknisk not:
 Python-paketet heter fortfarande `agentpay` och klienten `AgentPayClient` tills vidare for bakatkompatibilitet.
 
+Install from this repo today:
+
+```bash
+pip install -e packages/sdk-py
+```
+
+When the package is published publicly, the install command will be:
+
+```bash
+pip install agentpay
+```
+
 Tre-raders quickstart:
 
 ```python
@@ -156,12 +168,6 @@ client.create_webhook(
         "events": ["approval.created"],
     }
 )
-```
-
-Install locally:
-
-```bash
-pip install -e packages/sdk-py
 ```
 
 Examples:
