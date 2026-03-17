@@ -2,7 +2,7 @@
 
 Python SDK for [NORNR](https://nornr.com) — spend governance for AI agents.
 
-NORNR sits between agent intent and real settlement. Policy decides approved / queued / blocked. Every decision leaves a signed audit trail.
+NORNR gives your agents a mandate before they spend. Policy decides approved / queued / blocked. Every decision gets a signed receipt. Your agent acts on the decision using its own payment rails.
 
 ---
 
@@ -11,6 +11,25 @@ NORNR sits between agent intent and real settlement. Policy decides approved / q
 ```bash
 pip install agentpay
 ```
+
+---
+
+## How it works
+
+```
+agent calls wallet.pay()
+        ↓
+NORNR evaluates against policy
+        ↓
+decision: approved / queued / blocked
+        ↓
+agent acts on the decision
+using its own API keys and payment methods
+        ↓
+signed receipt + audit trail recorded
+```
+
+NORNR does not move money. It governs whether money should move, records that it did, and proves it afterward.
 
 ---
 
@@ -32,8 +51,15 @@ decision = wallet.pay(
     purpose="model inference",
 )
 
-if decision.get("requiresApproval"):
+if decision.get("status") == "approved":
+    # Mandate granted — proceed with your actual API call
+    response = openai_client.chat.completions.create(model="gpt-4o", messages=messages)
+elif decision.get("requiresApproval"):
+    # Above threshold — queued for human approval
     wallet.approve_if_needed(decision)
+else:
+    # Blocked by policy
+    print("Spend blocked:", decision.get("reasons"))
 ```
 
 ---
@@ -41,6 +67,9 @@ if decision.get("requiresApproval"):
 ## Connect an existing workspace
 
 ```python
+import os
+from agentpay import Wallet
+
 wallet = Wallet.connect(
     api_key=os.environ["NORNR_API_KEY"],
     agent_id="agent_abc123",
@@ -95,6 +124,15 @@ client.get_monthly_statement()
 # Anomalies
 client.list_anomalies()
 ```
+
+---
+
+## On-chain settlement (optional)
+
+NORNR supports optional on-chain USDC settlement via Base for teams that want
+cryptographic proof of transfer in addition to the signed audit trail.
+This is not required for governance to work — most teams use NORNR with
+their existing payment infrastructure.
 
 ---
 
