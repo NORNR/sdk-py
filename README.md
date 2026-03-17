@@ -1,35 +1,26 @@
 # agentpay
 
-Python SDK for [NORNR](https://nornr.com) — spend governance for AI agents.
+Python SDK for [NORNR](https://nornr.com) - mandates, approvals, and evidence for autonomous agents.
 
-NORNR gives your agents a mandate before they spend. Policy decides approved / queued / blocked. Every decision gets a signed receipt. Your agent acts on the decision using its own payment rails.
+NORNR gives your agents a mandate before they spend. Policy decides `approved`, `queued`, or `blocked`. Every decision gets a signed receipt. Your agent then acts on the decision using its own payment rails.
+
+The published Python package name remains `agentpay`, and the lower-level client remains `AgentPayClient` for backward compatibility. `Wallet` is the recommended starting point.
 
 ---
 
 ## Install
 
+Public package:
+
 ```bash
 pip install agentpay
 ```
 
----
+From this repo during local development:
 
-## How it works
-
+```bash
+pip install -e packages/sdk-py
 ```
-agent calls wallet.pay()
-        ↓
-NORNR evaluates against policy
-        ↓
-decision: approved / queued / blocked
-        ↓
-agent acts on the decision
-using its own API keys and payment methods
-        ↓
-signed receipt + audit trail recorded
-```
-
-NORNR does not move money. It governs whether money should move, records that it did, and proves it afterward.
 
 ---
 
@@ -52,14 +43,17 @@ decision = wallet.pay(
 )
 
 if decision.get("status") == "approved":
-    # Mandate granted — proceed with your actual API call
     response = openai_client.chat.completions.create(model="gpt-4o", messages=messages)
 elif decision.get("requiresApproval"):
-    # Above threshold — queued for human approval
     wallet.approve_if_needed(decision)
 else:
-    # Blocked by policy
     print("Spend blocked:", decision.get("reasons"))
+```
+
+If the decision is approved and you are using a configured settlement adapter:
+
+```python
+wallet.settle()
 ```
 
 ---
@@ -73,32 +67,46 @@ from agentpay import Wallet
 wallet = Wallet.connect(
     api_key=os.environ["NORNR_API_KEY"],
     agent_id="agent_abc123",
+    base_url="https://nornr.com",
 )
 ```
 
 ---
 
-## Works with your agent framework
+## OpenAI Agents SDK adapter
 
 ```python
-# OpenAI Agents SDK
 from agents import Agent
 from agentpay import Wallet, create_openai_agents_tools
 
-wallet = Wallet.create(owner="research-agent", daily_limit=100, base_url="https://nornr.com")
-agent = Agent(name="Research agent", tools=create_openai_agents_tools(wallet))
+wallet = Wallet.create(
+    owner="research-agent",
+    daily_limit=100,
+    require_approval_above=25,
+    base_url="https://nornr.com",
+)
 
-# LangChain
+agent = Agent(
+    name="Research agent",
+    tools=create_openai_agents_tools(wallet),
+)
+```
+
+---
+
+## LangChain adapter
+
+```python
 from agentpay import Wallet, create_langchain_tools
 
-wallet = Wallet.create(owner="ops-agent", daily_limit=100, base_url="https://nornr.com")
+wallet = Wallet.create(
+    owner="ops-agent",
+    daily_limit=100,
+    require_approval_above=25,
+    base_url="https://nornr.com",
+)
+
 tools = create_langchain_tools(wallet)
-
-# CrewAI
-from agentpay import Wallet, create_crewai_tools
-
-wallet = Wallet.create(owner="crew-agent", daily_limit=100, base_url="https://nornr.com")
-tools = create_crewai_tools(wallet)
 ```
 
 ---
@@ -108,31 +116,47 @@ tools = create_crewai_tools(wallet)
 ```python
 from agentpay import AgentPayClient
 
-client = AgentPayClient(base_url="https://nornr.com").with_api_key(os.environ["NORNR_API_KEY"])
+public_client = AgentPayClient(base_url="https://nornr.com")
+onboarding = public_client.onboard(
+    {
+        "workspaceName": "Atlas Agents",
+        "agentName": "research-agent",
+        "dailyLimitUsd": 50,
+        "requireApprovalOverUsd": 20,
+    }
+)
 
-# Intents
-client.create_payment_intent({"agentId": agent_id, "amountUsd": 5, "counterparty": "openai", "purpose": "inference"})
+client = public_client.with_api_key(onboarding["apiKey"]["key"])
 
-# Budget controls
-client.create_budget_cap({"dimension": "team", "value": "growth", "limitUsd": 500, "action": "queue"})
+client.create_payment_intent(
+    {
+        "agentId": onboarding["agent"]["id"],
+        "amountUsd": 5,
+        "counterparty": "openai",
+        "purpose": "model inference",
+    }
+)
 
-# Audit
+client.list_approvals()
+client.create_budget_cap(
+    {
+        "dimension": "team",
+        "value": "growth",
+        "limitUsd": 500,
+        "action": "queue",
+    }
+)
 client.export_audit()
 client.get_cost_report()
 client.get_monthly_statement()
-
-# Anomalies
 client.list_anomalies()
 ```
 
 ---
 
-## On-chain settlement (optional)
+## Optional settlement
 
-NORNR supports optional on-chain USDC settlement via Base for teams that want
-cryptographic proof of transfer in addition to the signed audit trail.
-This is not required for governance to work — most teams use NORNR with
-their existing payment infrastructure.
+NORNR can optionally execute on-chain USDC settlement through a configured rail adapter. Most teams start by using NORNR as the control layer above their existing payment infrastructure.
 
 ---
 
