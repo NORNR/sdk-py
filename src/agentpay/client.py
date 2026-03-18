@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from .auth import load_login
+from .auth import DEFAULT_BASE_URL, load_login
 from .budgeting import BudgetContext, budget as budget_scope, current_budget_scope
 from .breakers import CircuitBreakerConfig, LocalCircuitBreaker
 from .context import merge_business_context
@@ -129,7 +129,7 @@ def _apply_business_context_tags(
 class AgentPayClient:
     def __init__(
         self,
-        base_url: str = "http://127.0.0.1:3000",
+        base_url: str = DEFAULT_BASE_URL,
         api_key: str | None = None,
         *,
         timeout_seconds: float = 15.0,
@@ -175,6 +175,21 @@ class AgentPayClient:
 
     def list_policy_templates(self) -> Any:
         return self._request("/api/policy-templates")
+
+    def list_policy_packs(self) -> Any:
+        return self._request("/api/policy-packs")
+
+    def get_policy_pack(self, pack_id: str) -> Any:
+        return self._request(f"/api/policy-packs/{pack_id}")
+
+    def replay_policy_pack(self, pack_id: str, payload: dict[str, Any]) -> Any:
+        return self._request(f"/api/policy-packs/{pack_id}/replay", _RequestOptions(method="POST", body=payload))
+
+    def apply_policy_pack(self, pack_id: str, payload: dict[str, Any]) -> Any:
+        return self._request(f"/api/policy-packs/{pack_id}/apply", _RequestOptions(method="POST", body=payload))
+
+    def rollback_policy_pack(self, pack_id: str, payload: dict[str, Any] | None = None) -> Any:
+        return self._request(f"/api/policy-packs/{pack_id}/rollback", _RequestOptions(method="POST", body=payload or {}))
 
     def list_api_key_templates(self) -> Any:
         return self._request("/api/api-key-templates")
@@ -405,7 +420,7 @@ class AgentPayClient:
 class AsyncAgentPayClient:
     def __init__(
         self,
-        base_url: str = "http://127.0.0.1:3000",
+        base_url: str = DEFAULT_BASE_URL,
         api_key: str | None = None,
         *,
         timeout_seconds: float = 15.0,
@@ -434,6 +449,24 @@ class AsyncAgentPayClient:
 
     async def get_bootstrap(self) -> Any:
         return await self._request("/api/bootstrap")
+
+    async def list_policy_templates(self) -> Any:
+        return await self._request("/api/policy-templates")
+
+    async def list_policy_packs(self) -> Any:
+        return await self._request("/api/policy-packs")
+
+    async def get_policy_pack(self, pack_id: str) -> Any:
+        return await self._request(f"/api/policy-packs/{pack_id}")
+
+    async def replay_policy_pack(self, pack_id: str, payload: dict[str, Any]) -> Any:
+        return await self._request(f"/api/policy-packs/{pack_id}/replay", _RequestOptions(method="POST", body=payload))
+
+    async def apply_policy_pack(self, pack_id: str, payload: dict[str, Any]) -> Any:
+        return await self._request(f"/api/policy-packs/{pack_id}/apply", _RequestOptions(method="POST", body=payload))
+
+    async def rollback_policy_pack(self, pack_id: str, payload: dict[str, Any] | None = None) -> Any:
+        return await self._request(f"/api/policy-packs/{pack_id}/rollback", _RequestOptions(method="POST", body=payload or {}))
 
     async def create_payment_intent(self, payload: dict[str, Any]) -> Any:
         return await self._request("/api/payments/intents", _RequestOptions(method="POST", body=payload))
@@ -537,7 +570,7 @@ class Wallet:
         *,
         owner: str,
         daily_limit: float = 100,
-        base_url: str = "http://127.0.0.1:3000",
+        base_url: str = DEFAULT_BASE_URL,
         workspace_name: str | None = None,
         require_approval_above: float | None = None,
         max_transaction: float | None = None,
@@ -577,7 +610,7 @@ class Wallet:
         cls,
         *,
         api_key: str | None = None,
-        base_url: str = "http://127.0.0.1:3000",
+        base_url: str = DEFAULT_BASE_URL,
         agent_id: str | None = None,
         timeout_seconds: float = 15.0,
         transport: SyncHttpTransport | None = None,
@@ -772,6 +805,38 @@ class Wallet:
         }
         return PolicySimulationRecord.from_payload(self.client.simulate_policy(payload))
 
+    def list_policy_packs(self) -> Any:
+        return self.client.list_policy_packs()
+
+    def get_policy_pack(self, pack_id: str) -> Any:
+        return self.client.get_policy_pack(pack_id)
+
+    def replay_policy_pack(self, pack_id: str, *, mode: str = "shadow") -> Any:
+        return self.client.replay_policy_pack(
+            pack_id,
+            {
+                "agentId": self.agent_id,
+                "mode": mode,
+            },
+        )
+
+    def apply_policy_pack(self, pack_id: str, *, mode: str = "shadow") -> Any:
+        return self.client.apply_policy_pack(
+            pack_id,
+            {
+                "agentId": self.agent_id,
+                "mode": mode,
+            },
+        )
+
+    def rollback_policy_pack(self, pack_id: str) -> Any:
+        return self.client.rollback_policy_pack(
+            pack_id,
+            {
+                "agentId": self.agent_id,
+            },
+        )
+
     def audit_review(self) -> AuditReviewRecord:
         return AuditReviewRecord.from_payload(self.client.get_audit_review())
 
@@ -821,7 +886,7 @@ class AsyncWallet:
         *,
         owner: str,
         daily_limit: float = 100,
-        base_url: str = "http://127.0.0.1:3000",
+        base_url: str = DEFAULT_BASE_URL,
         workspace_name: str | None = None,
         require_approval_above: float | None = None,
         max_transaction: float | None = None,
@@ -861,7 +926,7 @@ class AsyncWallet:
         cls,
         *,
         api_key: str | None = None,
-        base_url: str = "http://127.0.0.1:3000",
+        base_url: str = DEFAULT_BASE_URL,
         agent_id: str | None = None,
         timeout_seconds: float = 15.0,
         transport: AsyncHttpTransport | None = None,
@@ -1050,6 +1115,38 @@ class AsyncWallet:
                     "rolloutMode": rollout_mode,
                 }
             )
+        )
+
+    async def list_policy_packs(self) -> Any:
+        return await self.client.list_policy_packs()
+
+    async def get_policy_pack(self, pack_id: str) -> Any:
+        return await self.client.get_policy_pack(pack_id)
+
+    async def replay_policy_pack(self, pack_id: str, *, mode: str = "shadow") -> Any:
+        return await self.client.replay_policy_pack(
+            pack_id,
+            {
+                "agentId": self.agent_id,
+                "mode": mode,
+            },
+        )
+
+    async def apply_policy_pack(self, pack_id: str, *, mode: str = "shadow") -> Any:
+        return await self.client.apply_policy_pack(
+            pack_id,
+            {
+                "agentId": self.agent_id,
+                "mode": mode,
+            },
+        )
+
+    async def rollback_policy_pack(self, pack_id: str) -> Any:
+        return await self.client.rollback_policy_pack(
+            pack_id,
+            {
+                "agentId": self.agent_id,
+            },
         )
 
     async def audit_review(self) -> AuditReviewRecord:

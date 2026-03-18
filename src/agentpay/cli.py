@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Sequence
 import webbrowser
 
-from .auth import clear_login, load_login, login_url, save_login
+from .auth import DEFAULT_BASE_URL, clear_login, load_login, login_url, save_login
 from .client import AgentPayClient, AuthenticationError
 from .pricing import estimate_cost
 
@@ -24,7 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     login = subparsers.add_parser("login", help="Store NORNR credentials locally and optionally write an env file")
     login.add_argument("--api-key", dest="api_key")
-    login.add_argument("--base-url", default="https://nornr.com")
+    login.add_argument("--base-url", default=DEFAULT_BASE_URL)
     login.add_argument("--path")
     login.add_argument("--auth-path")
     login.add_argument("--open-browser", action="store_true")
@@ -32,7 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     init_cmd = subparsers.add_parser("init", help="Create a starter NORNR env file")
     init_cmd.add_argument("--owner")
     init_cmd.add_argument("--daily-limit", default="50")
-    init_cmd.add_argument("--base-url", default="https://nornr.com")
+    init_cmd.add_argument("--base-url", default=DEFAULT_BASE_URL)
     init_cmd.add_argument("--path", default=".env.nornr")
 
     logout = subparsers.add_parser("logout", help="Remove locally stored NORNR credentials")
@@ -46,13 +46,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     debug = subparsers.add_parser("debug", help="Inspect a queued approval or recent decision from the terminal")
     debug.add_argument("resource_id")
-    debug.add_argument("--base-url", default="https://nornr.com")
+    debug.add_argument("--base-url", default=DEFAULT_BASE_URL)
     debug.add_argument("--api-key")
     debug.add_argument("--auth-path")
 
     rescue = subparsers.add_parser("rescue", help="Approve or reject a queued approval from the terminal")
     rescue.add_argument("approval_id")
-    rescue.add_argument("--base-url", default="https://nornr.com")
+    rescue.add_argument("--base-url", default=DEFAULT_BASE_URL)
     rescue.add_argument("--api-key")
     rescue.add_argument("--auth-path")
     rescue.add_argument("--action", choices=["approve", "reject"])

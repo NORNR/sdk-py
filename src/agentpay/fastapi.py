@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from .auth import DEFAULT_BASE_URL
 from .client import AuthenticationError, Wallet
 
 
 def get_nornr_wallet(
     api_key: str,
     *,
-    base_url: str = "http://127.0.0.1:3000",
+    base_url: str = DEFAULT_BASE_URL,
     agent_id: str | None = None,
     transport: Any | None = None,
 ) -> Wallet:
@@ -19,7 +20,7 @@ def get_nornr_wallet(
 
 def wallet_dependency(
     *,
-    base_url: str = "http://127.0.0.1:3000",
+    base_url: str = DEFAULT_BASE_URL,
     agent_id: str | None = None,
     api_key_header: str = "x-api-key",
     transport: Any | None = None,

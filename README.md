@@ -6,6 +6,17 @@ NORNR sits before provider spend, vendor actions, or paid tool calls. It decides
 
 The published package name remains `agentpay` and the lower-level client remains `AgentPayClient` for backward compatibility. For new Python code, start with `NornrWallet` or `Wallet`.
 
+## Default backend URL
+
+The SDK defaults to the hosted NORNR control plane at `https://nornr.com`.
+
+Override it in either of these ways:
+
+- pass `base_url="http://127.0.0.1:3000"` directly to `AgentPayClient`, `NornrWallet`, or `AsyncWallet`
+- set `NORNR_BASE_URL=http://127.0.0.1:3000` in your shell or `.env`
+
+That keeps production usage friction low while still making localhost testing explicit and easy.
+
 ## Why use this instead of provider caps alone?
 
 Provider-side limits on Modal, OpenAI, Replicate, or cloud infra are still a good idea. Keep them on.
@@ -56,6 +67,24 @@ From this repo during local development:
 ```bash
 pip install -e packages/sdk-py
 ```
+
+To build and publish the package to PyPI when you're ready:
+
+```bash
+python -m pip install -U build twine
+python -m build
+python -m twine upload dist/*
+```
+
+Minimal copy-pasteable examples live under [`examples/`](./examples):
+
+- [`01_basic_guard.py`](./examples/01_basic_guard.py)
+- [`02_async_wallet.py`](./examples/02_async_wallet.py)
+- [`03_pydantic_ai_agent.py`](./examples/03_pydantic_ai_agent.py)
+
+## License
+
+`agentpay` is published under the MIT license. See [LICENSE](./LICENSE).
 
 ## Start here in 60 seconds
 
@@ -138,6 +167,9 @@ Useful high-level methods:
 - `wallet.approve_if_needed(...)`
 - `wallet.balance()`
 - `wallet.simulate_policy(...)`
+- `wallet.list_policy_packs()`
+- `wallet.replay_policy_pack(...)`
+- `wallet.apply_policy_pack(...)`
 - `wallet.audit_review()`
 - `wallet.finance_packet()`
 - `wallet.timeline()`
@@ -158,9 +190,14 @@ except ApprovalRequiredError as exc:
     print(exc)  # ... Approve it here: https://nornr.com/app/approvals/...
 ```
 
-## Decorator + context manager guard
+## Drop NORNR into existing Python code
 
-If you want NORNR to feel native inside existing ML or agent code, use the guard decorator or the wallet context manager.
+If you want NORNR to feel native inside existing ML or agent code, start here.
+These are the three highest-signal patterns:
+
+- `@nornr_guard(...)` around an async function
+- `with wallet.guard(...)` around a local expensive block
+- `wrap(OpenAI(), wallet, ...)` to secure an existing client in one line
 
 ```python
 from agentpay import NornrWallet, nornr_guard
@@ -195,6 +232,16 @@ with wallet.guard(amount=18.0, counterparty="modal", purpose="Launch one GPU run
 ```
 
 The decorator preserves the original function metadata for IDEs and static analysis.
+
+Wrap an existing OpenAI- or Anthropic-style client in one line:
+
+```python
+from openai import OpenAI
+from agentpay import NornrWallet, wrap
+
+wallet = NornrWallet.connect(api_key="replace-with-nornr-api-key", base_url="https://nornr.com")
+client = wrap(OpenAI(), wallet, amount=2.5, counterparty="openai", purpose="chat completion")
+```
 
 ## Dry-run previews and local budget scopes
 
@@ -246,16 +293,6 @@ asyncio.run(main())
 If `httpx` is installed, the async client uses it directly. Otherwise it falls back to a thread-backed sync transport so you can still integrate it without extra runtime dependencies.
 
 ## Wrapped clients and streaming
-
-Use `wrap(...)` to secure an existing OpenAI- or Anthropic-style client in one line:
-
-```python
-from openai import OpenAI
-from agentpay import NornrWallet, wrap
-
-wallet = NornrWallet.connect(api_key="replace-with-nornr-api-key", base_url="https://nornr.com")
-client = wrap(OpenAI(), wallet, amount=2.5, counterparty="openai", purpose="chat completion")
-```
 
 For explicit streaming flows, use `guarded_stream(...)` or `guarded_async_stream(...)` so the decision happens before the first chunk leaves the generator.
 
@@ -404,6 +441,34 @@ Replay is especially useful when you want to answer:
 - would this new policy reduce operator load?
 - how much spend would it have prevented?
 - how many false positives would it introduce?
+
+## Curated Policy Packs
+
+Official governance packs let you install a proven control posture instead of hand-tuning every field from scratch.
+
+```python
+from agentpay import NornrWallet
+
+wallet = NornrWallet.connect(api_key="replace-with-nornr-api-key", base_url="https://nornr.com")
+catalog = wallet.list_policy_packs()
+
+print(catalog["recommendedPackId"])
+print(catalog["packs"][0]["title"])
+
+replay = wallet.replay_policy_pack("research-safe", mode="shadow")
+print(replay["replay"]["candidate"]["summary"])
+
+applied = wallet.apply_policy_pack("research-safe", mode="shadow")
+print(applied["install"]["mode"])
+```
+
+Current official packs focus on:
+
+- research / model spend
+- GPU + compute bursts
+- vendor / procurement workflows
+- browser ops
+- finance review lanes
 
 ## Audit and finance handoff
 

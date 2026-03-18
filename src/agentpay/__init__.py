@@ -1,5 +1,5 @@
 from .adapters import create_langchain_tools, create_openai_agents_tools
-from .auth import LoginProfile, clear_login, load_login, login_url, save_login
+from .auth import DEFAULT_BASE_URL, LoginProfile, clear_login, load_login, login_url, save_login
 from .breakers import CircuitBreakerConfig, LocalCircuitBreaker
 from .budgeting import budget
 from .client import (
@@ -57,6 +57,7 @@ __all__ = [
     "BusinessContext",
     "CircuitBreakerConfig",
     "CostEstimate",
+    "DEFAULT_BASE_URL",
     "DecisionRecord",
     "FinancePacketRecord",
     "IntentCheckRecord",

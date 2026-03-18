@@ -5,6 +5,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+DEFAULT_BASE_URL = os.environ.get("NORNR_BASE_URL", "https://nornr.com").rstrip("/")
+
 
 @dataclass(frozen=True)
 class LoginProfile:
@@ -23,7 +25,7 @@ def default_auth_path() -> Path:
     return Path.home() / ".config" / "nornr" / "auth.json"
 
 
-def save_login(api_key: str, *, base_url: str = "https://nornr.com", path: Path | None = None) -> Path:
+def save_login(api_key: str, *, base_url: str = DEFAULT_BASE_URL, path: Path | None = None) -> Path:
     auth_path = path or default_auth_path()
     auth_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -55,5 +57,5 @@ def clear_login(path: Path | None = None) -> None:
         auth_path.unlink()
 
 
-def login_url(base_url: str = "https://nornr.com") -> str:
+def login_url(base_url: str = DEFAULT_BASE_URL) -> str:
     return f"{_normalize_base_url(base_url)}/app?source=nornr-cli-login"
