@@ -6,7 +6,9 @@ from typing import Any, Callable
 from .client import AgentPayError, Wallet, _find_pending_approval
 
 
-def _payment_summary(payload: dict[str, Any]) -> str:
+def _payment_summary(payload: Any) -> str:
+    if hasattr(payload, "to_summary_dict"):
+        return json.dumps(payload.to_summary_dict())
     payment_intent = payload.get("paymentIntent") or {}
     approval = payload.get("approval") or {}
     return json.dumps(

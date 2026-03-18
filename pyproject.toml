@@ -8,18 +8,39 @@ version = "0.1.0"
 description = "Python SDK for NORNR"
 readme = "README.md"
 requires-python = ">=3.9"
+dependencies = ["typing-extensions>=4.12"]
 authors = [
   { name = "NORNR" }
 ]
 license = { text = "MIT" }
+keywords = ["ai-agents", "agent-governance", "approvals", "audit-trail", "budget-controls"]
+urls = { Homepage = "https://nornr.com", Documentation = "https://nornr.com/quickstart", Repository = "https://github.com/NORNR/sdk-py", Issues = "https://github.com/NORNR/sdk-py/issues" }
 classifiers = [
   "Programming Language :: Python :: 3",
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent"
 ]
 
+[project.optional-dependencies]
+async = ["httpx>=0.27"]
+pydantic = ["pydantic>=2.9"]
+pydanticai = ["pydantic>=2.9", "pydantic-ai>=0.0.24"]
+fastapi = ["fastapi>=0.115"]
+langgraph = ["langgraph>=0.2.0"]
+openai-agents = ["openai-agents>=0.3.0"]
+langchain = ["langchain>=0.3.0", "langchain-core>=0.3.0", "langchain-openai>=0.3.0"]
+crewai = ["crewai>=0.126.0"]
+dev = ["httpx>=0.27", "pydantic>=2.9", "mypy>=1.11", "pytest>=8.3", "ruff>=0.6"]
+
+[project.scripts]
+nornr = "agentpay.cli:main"
+
 [tool.setuptools]
 package-dir = { "" = "src" }
+include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+agentpay = ["py.typed"]

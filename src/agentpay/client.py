@@ -2,15 +2,72 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
-from urllib import error, request
+from typing import Any, Mapping
+
+from .auth import load_login
+from .budgeting import BudgetContext, budget as budget_scope, current_budget_scope
+from .breakers import CircuitBreakerConfig, LocalCircuitBreaker
+from .context import merge_business_context
+from .intent import IntentCheckRecord
+from .models import (
+    ApprovalRecord,
+    AuditReviewRecord,
+    BalanceRecord,
+    DecisionRecord,
+    FinancePacketRecord,
+    PolicySimulationRecord,
+    TimelineReportRecord,
+    WeeklyReviewRecord,
+)
+from .replay import merge_replay_context
+from .transport import AsyncHttpTransport, SyncHttpTransport, TransportConfig
 
 
 class AgentPayError(Exception):
-    def __init__(self, message: str, *, status_code: int | None = None, payload: Any = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        payload: Any = None,
+        request_id: str | None = None,
+        retryable: bool = False,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.payload = payload
+        self.request_id = request_id
+        self.retryable = retryable
+
+
+class AuthenticationError(AgentPayError):
+    pass
+
+
+class ValidationError(AgentPayError):
+    pass
+
+
+class RateLimitError(AgentPayError):
+    pass
+
+
+class TransportError(AgentPayError):
+    pass
+
+
+class ApprovalRequiredError(AgentPayError):
+    @classmethod
+    def from_decision(cls, decision: DecisionRecord) -> "ApprovalRequiredError":
+        approval_url = decision.approval_url
+        message = f"NORNR returned {decision.status} for {decision.payment_intent.counterparty or 'unknown counterparty'}"
+        if approval_url:
+            message = f"{message}. Approve it here: {approval_url}"
+        return cls(
+            message,
+            payload=decision.to_dict(),
+            retryable=decision.status == "queued",
+        )
 
 
 @dataclass(frozen=True)
@@ -21,13 +78,88 @@ class _RequestOptions:
     parse_json: bool = True
 
 
+def _coerce_error(status_code: int, payload: Any, fallback: str) -> AgentPayError:
+    message = payload.get("message") if isinstance(payload, dict) else fallback
+    request_id = payload.get("requestId") if isinstance(payload, dict) else None
+    if status_code == 401:
+        return AuthenticationError(message or fallback, status_code=status_code, payload=payload, request_id=request_id)
+    if status_code == 429:
+        return RateLimitError(message or fallback, status_code=status_code, payload=payload, request_id=request_id, retryable=True)
+    if status_code >= 500:
+        return TransportError(message or fallback, status_code=status_code, payload=payload, request_id=request_id, retryable=True)
+    return ValidationError(message or fallback, status_code=status_code, payload=payload, request_id=request_id)
+
+
+def _decode_payload(payload: str, parse_json: bool) -> Any:
+    if not payload:
+        return None
+    return json.loads(payload) if parse_json else payload
+
+
+def _control_room_url(base_url: str, approval_id: str | None) -> str | None:
+    if not approval_id:
+        return None
+    root = base_url.rstrip("/")
+    if root.endswith("/app"):
+        root = root[: -len("/app")]
+    return f"{root}/app/approvals/{approval_id}"
+
+
+def _apply_business_context_tags(
+    budget_tags: dict[str, str] | None,
+    business_context: dict[str, Any] | None,
+) -> dict[str, str] | None:
+    merged = dict(budget_tags or {})
+    if business_context:
+        tags = business_context.get("tags") or {}
+        for key, value in tags.items():
+            merged[str(key)] = str(value)
+        for source_key, target_key in {
+            "ticketId": "ticketId",
+            "customerSegment": "customerSegment",
+            "priority": "priority",
+            "sessionId": "sessionId",
+            "threadId": "threadId",
+        }.items():
+            if business_context.get(source_key):
+                merged[target_key] = str(business_context[source_key])
+    return merged or None
+
+
 class AgentPayClient:
-    def __init__(self, base_url: str = "http://127.0.0.1:3000", api_key: str | None = None) -> None:
+    def __init__(
+        self,
+        base_url: str = "http://127.0.0.1:3000",
+        api_key: str | None = None,
+        *,
+        timeout_seconds: float = 15.0,
+        default_headers: Mapping[str, str] | None = None,
+        transport: SyncHttpTransport | None = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self.timeout_seconds = timeout_seconds
+        self.default_headers = dict(default_headers or {})
+        self.transport = transport or SyncHttpTransport(
+            TransportConfig(timeout_seconds=timeout_seconds, default_headers=dict(self.default_headers)),
+        )
 
     def with_api_key(self, api_key: str) -> "AgentPayClient":
-        return AgentPayClient(base_url=self.base_url, api_key=api_key)
+        return AgentPayClient(
+            base_url=self.base_url,
+            api_key=api_key,
+            timeout_seconds=self.timeout_seconds,
+            default_headers=self.default_headers,
+            transport=self.transport,
+        )
+
+    def with_timeout(self, timeout_seconds: float) -> "AgentPayClient":
+        return AgentPayClient(
+            base_url=self.base_url,
+            api_key=self.api_key,
+            timeout_seconds=timeout_seconds,
+            default_headers=self.default_headers,
+        )
 
     def onboard(self, payload: dict[str, Any]) -> Any:
         return self._request("/api/onboarding", _RequestOptions(method="POST", body=payload, authenticated=False))
@@ -80,6 +212,24 @@ class AgentPayClient:
     def get_reputation(self) -> Any:
         return self._request("/api/reputation")
 
+    def get_trust_profile(self) -> Any:
+        return self._request("/api/trust/profile")
+
+    def get_trust_tiers(self) -> Any:
+        return self._request("/api/trust/tiers")
+
+    def get_trust_manifest(self) -> Any:
+        return self._request("/api/trust/manifest")
+
+    def get_signed_trust_manifest(self) -> Any:
+        return self._request("/api/trust/manifest/signed")
+
+    def verify_trust_manifest(self, payload: dict[str, Any]) -> Any:
+        return self._request("/api/trust/verify", _RequestOptions(method="POST", body=payload))
+
+    def handshake_trust_manifest(self, payload: dict[str, Any]) -> Any:
+        return self._request("/api/trust/handshake", _RequestOptions(method="POST", body=payload))
+
     def get_portable_reputation(self) -> Any:
         return self._request("/api/reputation/portable")
 
@@ -130,6 +280,9 @@ class AgentPayClient:
 
     def export_audit(self) -> Any:
         return self._request("/api/audit/export")
+
+    def get_audit_review(self, fmt: str = "json") -> Any:
+        return self._request(f"/api/audit/review?format={fmt}", _RequestOptions(parse_json=fmt == "json"))
 
     def get_cost_report(self, fmt: str = "json") -> Any:
         return self._request(f"/api/reporting/costs?format={fmt}", _RequestOptions(parse_json=fmt == "json"))
@@ -186,11 +339,23 @@ class AgentPayClient:
     def get_reconciliation(self) -> Any:
         return self._request("/api/reconciliation")
 
+    def get_intent_timeline(self) -> Any:
+        return self._request("/api/workspace/intent-timeline")
+
+    def get_weekly_review(self) -> Any:
+        return self._request("/api/workspace/weekly-review")
+
+    def get_policy_workbench(self) -> Any:
+        return self._request("/api/policy-workbench")
+
     def approve_intent(self, approval_id: str, payload: dict[str, Any] | None = None) -> Any:
         return self._request(f"/api/approvals/{approval_id}/approve", _RequestOptions(method="POST", body=payload or {}))
 
     def reject_intent(self, approval_id: str, payload: dict[str, Any] | None = None) -> Any:
         return self._request(f"/api/approvals/{approval_id}/reject", _RequestOptions(method="POST", body=payload or {}))
+
+    def list_approvals(self) -> Any:
+        return self._request("/api/approvals")
 
     def list_ledger(self, agent_id: str) -> Any:
         return self._request(f"/api/agents/{agent_id}/ledger")
@@ -201,9 +366,6 @@ class AgentPayClient:
     def attach_receipt_evidence(self, receipt_id: str, payload: dict[str, Any]) -> Any:
         return self._request(f"/api/receipts/{receipt_id}/evidence", _RequestOptions(method="POST", body=payload))
 
-    def export_cost_report(self, fmt: str = "csv") -> Any:
-        return self._request(f"/api/reporting/costs?format={fmt}", _RequestOptions(parse_json=fmt == "json"))
-
     def list_api_keys(self) -> Any:
         return self._request("/api/api-keys")
 
@@ -212,66 +374,151 @@ class AgentPayClient:
         return self._request("/api/api-keys", _RequestOptions(method="POST", body=body))
 
     def revoke_api_key(self, api_key_id: str, payload: dict[str, Any] | None = None) -> Any:
-        return self._request(
-            f"/api/api-keys/{api_key_id}/revoke",
-            _RequestOptions(method="POST", body=payload or {}),
-        )
+        return self._request(f"/api/api-keys/{api_key_id}/revoke", _RequestOptions(method="POST", body=payload or {}))
 
     def rotate_api_key(self, api_key_id: str, payload: dict[str, Any] | None = None) -> Any:
-        return self._request(
-            f"/api/api-keys/{api_key_id}/rotate",
-            _RequestOptions(method="POST", body=payload or {}),
-        )
+        return self._request(f"/api/api-keys/{api_key_id}/rotate", _RequestOptions(method="POST", body=payload or {}))
 
     def _request(self, pathname: str, options: _RequestOptions = _RequestOptions()) -> Any:
         headers: dict[str, str] = {}
-        data: bytes | None = None
-
-        if options.body is not None:
-            headers["content-type"] = "application/json"
-            data = json.dumps(options.body).encode("utf-8")
-
         if options.authenticated:
             if not self.api_key:
-                raise AgentPayError("Missing api_key for authenticated request")
+                raise AuthenticationError("Missing api_key for authenticated request")
             headers["x-api-key"] = self.api_key
 
-        req = request.Request(
-            f"{self.base_url}{pathname}",
-            method=options.method,
-            headers=headers,
-            data=data,
+        try:
+            status_code, payload_text = self.transport.request(
+                url=f"{self.base_url}{pathname}",
+                method=options.method,
+                headers=headers,
+                body=options.body,
+            )
+        except Exception as exc:  # pragma: no cover - transport-specific failure path
+            raise TransportError(f"Request failed: {exc}", retryable=True) from exc
+
+        payload = _decode_payload(payload_text, options.parse_json)
+        if status_code >= 400:
+            raise _coerce_error(status_code, payload, f"Request failed with status {status_code}")
+        return payload
+
+
+class AsyncAgentPayClient:
+    def __init__(
+        self,
+        base_url: str = "http://127.0.0.1:3000",
+        api_key: str | None = None,
+        *,
+        timeout_seconds: float = 15.0,
+        default_headers: Mapping[str, str] | None = None,
+        transport: AsyncHttpTransport | None = None,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.timeout_seconds = timeout_seconds
+        self.default_headers = dict(default_headers or {})
+        self.transport = transport or AsyncHttpTransport(
+            TransportConfig(timeout_seconds=timeout_seconds, default_headers=dict(self.default_headers)),
         )
 
+    def with_api_key(self, api_key: str) -> "AsyncAgentPayClient":
+        return AsyncAgentPayClient(
+            base_url=self.base_url,
+            api_key=api_key,
+            timeout_seconds=self.timeout_seconds,
+            default_headers=self.default_headers,
+            transport=self.transport,
+        )
+
+    async def onboard(self, payload: dict[str, Any]) -> Any:
+        return await self._request("/api/onboarding", _RequestOptions(method="POST", body=payload, authenticated=False))
+
+    async def get_bootstrap(self) -> Any:
+        return await self._request("/api/bootstrap")
+
+    async def create_payment_intent(self, payload: dict[str, Any]) -> Any:
+        return await self._request("/api/payments/intents", _RequestOptions(method="POST", body=payload))
+
+    async def get_wallet(self) -> Any:
+        return await self._request("/api/wallet")
+
+    async def run_settlement(self) -> Any:
+        return await self._request("/api/settlement/run", _RequestOptions(method="POST"))
+
+    async def list_approvals(self) -> Any:
+        return await self._request("/api/approvals")
+
+    async def approve_intent(self, approval_id: str, payload: dict[str, Any] | None = None) -> Any:
+        return await self._request(f"/api/approvals/{approval_id}/approve", _RequestOptions(method="POST", body=payload or {}))
+
+    async def reject_intent(self, approval_id: str, payload: dict[str, Any] | None = None) -> Any:
+        return await self._request(f"/api/approvals/{approval_id}/reject", _RequestOptions(method="POST", body=payload or {}))
+
+    async def simulate_policy(self, payload: dict[str, Any]) -> Any:
+        return await self._request("/api/policies/simulate", _RequestOptions(method="POST", body=payload))
+
+    async def get_audit_review(self) -> Any:
+        return await self._request("/api/audit/review")
+
+    async def get_trust_profile(self) -> Any:
+        return await self._request("/api/trust/profile")
+
+    async def get_trust_tiers(self) -> Any:
+        return await self._request("/api/trust/tiers")
+
+    async def get_trust_manifest(self) -> Any:
+        return await self._request("/api/trust/manifest")
+
+    async def get_signed_trust_manifest(self) -> Any:
+        return await self._request("/api/trust/manifest/signed")
+
+    async def verify_trust_manifest(self, payload: dict[str, Any]) -> Any:
+        return await self._request("/api/trust/verify", _RequestOptions(method="POST", body=payload))
+
+    async def handshake_trust_manifest(self, payload: dict[str, Any]) -> Any:
+        return await self._request("/api/trust/handshake", _RequestOptions(method="POST", body=payload))
+
+    async def get_intent_timeline(self) -> Any:
+        return await self._request("/api/workspace/intent-timeline")
+
+    async def get_weekly_review(self) -> Any:
+        return await self._request("/api/workspace/weekly-review")
+
+    async def _request(self, pathname: str, options: _RequestOptions = _RequestOptions()) -> Any:
+        headers: dict[str, str] = {}
+        if options.authenticated:
+            if not self.api_key:
+                raise AuthenticationError("Missing api_key for authenticated request")
+            headers["x-api-key"] = self.api_key
         try:
-            with request.urlopen(req) as response:
-                payload = response.read().decode("utf-8")
-                if not payload:
-                    return None
-                return json.loads(payload) if options.parse_json else payload
-        except error.HTTPError as exc:
-            body = exc.read().decode("utf-8")
-            payload = json.loads(body) if body else None
-            message = payload.get("message") if isinstance(payload, dict) else None
-            raise AgentPayError(message or f"Request failed with status {exc.code}", status_code=exc.code, payload=payload) from exc
-        except error.URLError as exc:
-            raise AgentPayError(f"Request failed: {exc.reason}") from exc
+            status_code, payload_text = await self.transport.request(
+                url=f"{self.base_url}{pathname}",
+                method=options.method,
+                headers=headers,
+                body=options.body,
+            )
+        except Exception as exc:  # pragma: no cover - transport-specific failure path
+            raise TransportError(f"Request failed: {exc}", retryable=True) from exc
+
+        payload = _decode_payload(payload_text, options.parse_json)
+        if status_code >= 400:
+            raise _coerce_error(status_code, payload, f"Request failed with status {status_code}")
+        return payload
 
 
 def _looks_like_evm_address(value: Any) -> bool:
     return isinstance(value, str) and value.startswith("0x") and len(value) == 42
 
 
-def _first_agent(bootstrap: dict[str, Any]) -> dict[str, Any]:
+def _first_agent(bootstrap: Mapping[str, Any]) -> dict[str, Any]:
     agents = bootstrap.get("agents") or []
     if not agents:
         raise AgentPayError("Wallet bootstrap did not return any agents")
     return agents[0]
 
 
-def _find_pending_approval(bootstrap: dict[str, Any], payment_intent_id: str) -> dict[str, Any] | None:
+def _find_pending_approval(bootstrap: Mapping[str, Any], payment_intent_id: str) -> dict[str, Any] | None:
     approvals = bootstrap.get("approvals") or []
-    return next((item for item in approvals if item.get("paymentIntentId") == payment_intent_id), None)
+    return next((item for item in approvals if item.get("paymentIntentId") == payment_intent_id and item.get("status") == "pending"), None)
 
 
 @dataclass
@@ -282,6 +529,7 @@ class Wallet:
     wallet: dict[str, Any] | None
     api_key: dict[str, Any] | None
     policy: dict[str, Any] | None = None
+    circuit_breaker: LocalCircuitBreaker | None = None
 
     @classmethod
     def create(
@@ -297,8 +545,10 @@ class Wallet:
         auto_pause_on_anomaly: bool = False,
         review_on_anomaly: bool = False,
         starting_balance: float = 100,
+        timeout_seconds: float = 15.0,
+        transport: SyncHttpTransport | None = None,
     ) -> "Wallet":
-        public_client = AgentPayClient(base_url=base_url)
+        public_client = AgentPayClient(base_url=base_url, timeout_seconds=timeout_seconds, transport=transport)
         onboarding = public_client.onboard(
             {
                 "workspaceName": workspace_name or f"{owner} workspace",
@@ -326,11 +576,19 @@ class Wallet:
     def connect(
         cls,
         *,
-        api_key: str,
+        api_key: str | None = None,
         base_url: str = "http://127.0.0.1:3000",
         agent_id: str | None = None,
+        timeout_seconds: float = 15.0,
+        transport: SyncHttpTransport | None = None,
     ) -> "Wallet":
-        client = AgentPayClient(base_url=base_url, api_key=api_key)
+        resolved_api_key = api_key
+        if not resolved_api_key:
+            profile = load_login(base_url=base_url)
+            if not profile:
+                raise AuthenticationError("Missing api_key and no stored NORNR login found. Run `nornr login`.")
+            resolved_api_key = profile.api_key
+        client = AgentPayClient(base_url=base_url, api_key=resolved_api_key, timeout_seconds=timeout_seconds, transport=transport)
         bootstrap = client.get_bootstrap()
         agent = next((item for item in bootstrap.get("agents", []) if item.get("id") == agent_id), None) if agent_id else None
         return cls(
@@ -338,7 +596,7 @@ class Wallet:
             workspace=bootstrap["workspace"],
             agent=agent or _first_agent(bootstrap),
             wallet=bootstrap.get("wallet"),
-            api_key={"key": api_key},
+            api_key={"key": resolved_api_key},
         )
 
     @property
@@ -364,17 +622,45 @@ class Wallet:
         purpose: str | None = None,
         counterparty: str | None = None,
         budget_tags: dict[str, str] | None = None,
-    ) -> dict[str, Any]:
+        dry_run: bool = False,
+        business_context: dict[str, Any] | None = None,
+        replay_context: dict[str, Any] | None = None,
+    ) -> DecisionRecord:
+        scoped_budget = current_budget_scope()
+        if scoped_budget and amount > scoped_budget.limit_usd:
+            raise ValidationError(
+                f"Local NORNR budget scope blocked {amount:.2f} USD because the block limit is {scoped_budget.limit_usd:.2f} USD",
+            )
+        if self.circuit_breaker:
+            try:
+                self.circuit_breaker.check(amount)
+            except RuntimeError as exc:
+                raise ValidationError(str(exc)) from exc
         destination = to if _looks_like_evm_address(to) else None
         resolved_counterparty = counterparty or (to if not destination else "external")
+        if scoped_budget and scoped_budget.counterparty and resolved_counterparty != scoped_budget.counterparty:
+            raise ValidationError(
+                f"Local NORNR budget scope only allows {scoped_budget.counterparty}, but got {resolved_counterparty}",
+            )
+        resolved_business_context = merge_business_context(business_context)
+        merged_budget_tags = dict(budget_tags or {})
+        if scoped_budget and scoped_budget.budget_tags:
+            merged_budget_tags = {**scoped_budget.budget_tags, **merged_budget_tags}
+        merged_budget_tags = _apply_business_context_tags(merged_budget_tags or None, resolved_business_context) or {}
+        resolved_purpose = purpose or f"agent payment to {resolved_counterparty}"
+        if scoped_budget and scoped_budget.purpose_prefix:
+            resolved_purpose = f"{scoped_budget.purpose_prefix}: {resolved_purpose}"
         result = self.client.create_payment_intent(
             {
                 "agentId": self.agent_id,
                 "amountUsd": amount,
                 "counterparty": resolved_counterparty,
                 "destination": destination,
-                "budgetTags": budget_tags,
-                "purpose": purpose or f"agent payment to {resolved_counterparty}",
+                "budgetTags": merged_budget_tags or None,
+                "purpose": resolved_purpose,
+                "dryRun": bool(dry_run or (scoped_budget.dry_run if scoped_budget else False)),
+                "businessContext": resolved_business_context,
+                "executionContext": merge_replay_context(replay_context, default_source="wallet.pay"),
             }
         )
         payment_intent = result.get("paymentIntent") or {}
@@ -382,18 +668,29 @@ class Wallet:
             bootstrap = self.client.get_bootstrap()
             approval = _find_pending_approval(bootstrap, payment_intent.get("id", ""))
             if approval:
+                approval = {
+                    **approval,
+                    "approvalUrl": _control_room_url(self.client.base_url, approval.get("id")),
+                }
                 result["approval"] = approval
+                result["approvalUrl"] = approval.get("approvalUrl")
             result["requiresApproval"] = approval is not None
         else:
             result["requiresApproval"] = False
-        return result
+        return DecisionRecord.from_payload(result)
 
-    def approve_if_needed(self, payment: dict[str, Any], *, comment: str | None = None) -> dict[str, Any]:
-        approval = payment.get("approval")
+    def pending_approvals(self) -> list[ApprovalRecord]:
+        bootstrap = self.client.get_bootstrap()
+        return [record for record in (ApprovalRecord.from_payload(item) for item in bootstrap.get("approvals", [])) if record and record.status == "pending"]
+
+    def approve_if_needed(self, payment: Mapping[str, Any] | DecisionRecord, *, comment: str | None = None) -> Any:
+        approval_payload = payment.get("approval") if isinstance(payment, Mapping) else None
+        approval = ApprovalRecord.from_payload(approval_payload)
         if approval:
-            return self.client.approve_intent(approval["id"], {"comment": comment} if comment else {})
-        payment_intent = payment.get("paymentIntent") or {}
-        if payment_intent.get("status") != "queued":
+            return self.client.approve_intent(approval.id or "", {"comment": comment} if comment else {})
+        payment_intent = payment.get("paymentIntent") if isinstance(payment, Mapping) else None
+        status = payment_intent.get("status") if isinstance(payment_intent, Mapping) else None
+        if status != "queued":
             return payment
         bootstrap = self.client.get_bootstrap()
         pending_approval = _find_pending_approval(bootstrap, payment_intent["id"])
@@ -401,10 +698,392 @@ class Wallet:
             raise AgentPayError("No pending approval found for payment intent")
         return self.client.approve_intent(pending_approval["id"], {"comment": comment} if comment else {})
 
-    def balance(self) -> dict[str, Any]:
+    def reject(self, approval_id: str, *, comment: str | None = None) -> Any:
+        return self.client.reject_intent(approval_id, {"comment": comment} if comment else {})
+
+    def balance(self) -> BalanceRecord:
         wallet_state = self.client.get_wallet()
         self.wallet = wallet_state
-        return wallet_state
+        return BalanceRecord.from_payload(wallet_state)
 
     def settle(self) -> dict[str, Any]:
         return self.client.run_settlement()
+
+    def budget(
+        self,
+        limit: float,
+        *,
+        counterparty: str | None = None,
+        purpose_prefix: str | None = None,
+        budget_tags: dict[str, str] | None = None,
+        dry_run: bool = False,
+    ) -> BudgetContext:
+        return budget_scope(
+            limit,
+            counterparty=counterparty,
+            purpose_prefix=purpose_prefix,
+            budget_tags=budget_tags,
+            dry_run=dry_run,
+        )
+
+    def enable_circuit_breaker(
+        self,
+        *,
+        max_requests: int = 10,
+        window_seconds: float = 1.0,
+        max_spend_usd: float | None = None,
+        max_velocity_usd: float | None = None,
+    ) -> "Wallet":
+        self.circuit_breaker = LocalCircuitBreaker(
+            CircuitBreakerConfig(
+                max_requests=max_requests,
+                window_seconds=window_seconds,
+                max_spend_usd=max_spend_usd,
+                max_velocity_usd=max_velocity_usd,
+            )
+        )
+        return self
+
+    def guard(
+        self,
+        *,
+        amount: float,
+        counterparty: str,
+        purpose: str,
+        destination: str | None = None,
+        budget_tags: dict[str, str] | None = None,
+    ) -> Any:
+        from .guards import WalletGuard
+
+        return WalletGuard(
+            self,
+            amount=amount,
+            counterparty=counterparty,
+            purpose=purpose,
+            destination=destination,
+            budget_tags=budget_tags,
+        )
+
+    def simulate_policy(self, *, template_id: str, rollout_mode: str = "shadow") -> PolicySimulationRecord:
+        payload = {
+            "agentId": self.agent_id,
+            "templateId": template_id,
+            "rolloutMode": rollout_mode,
+        }
+        return PolicySimulationRecord.from_payload(self.client.simulate_policy(payload))
+
+    def audit_review(self) -> AuditReviewRecord:
+        return AuditReviewRecord.from_payload(self.client.get_audit_review())
+
+    def finance_packet(self) -> FinancePacketRecord:
+        return self.audit_review().finance_packet
+
+    def timeline(self) -> TimelineReportRecord:
+        return TimelineReportRecord.from_payload(self.client.get_intent_timeline())
+
+    def weekly_review(self) -> WeeklyReviewRecord:
+        return WeeklyReviewRecord.from_payload(self.client.get_weekly_review())
+
+    def check(
+        self,
+        *,
+        intent: str,
+        cost: float,
+        counterparty: str,
+        budget_tags: dict[str, str] | None = None,
+        business_context: dict[str, Any] | None = None,
+    ) -> IntentCheckRecord:
+        decision = self.pay(
+            amount=cost,
+            to=counterparty,
+            counterparty=counterparty,
+            purpose=intent,
+            budget_tags=budget_tags,
+            dry_run=True,
+            business_context=business_context or {"reason": intent},
+        )
+        return IntentCheckRecord.from_decision(decision, intent=intent, amount=cost)
+
+
+@dataclass
+class AsyncWallet:
+    client: AsyncAgentPayClient
+    workspace: dict[str, Any]
+    agent: dict[str, Any]
+    wallet: dict[str, Any] | None
+    api_key: dict[str, Any] | None
+    policy: dict[str, Any] | None = None
+    circuit_breaker: LocalCircuitBreaker | None = None
+
+    @classmethod
+    async def create(
+        cls,
+        *,
+        owner: str,
+        daily_limit: float = 100,
+        base_url: str = "http://127.0.0.1:3000",
+        workspace_name: str | None = None,
+        require_approval_above: float | None = None,
+        max_transaction: float | None = None,
+        whitelist: list[str] | None = None,
+        auto_pause_on_anomaly: bool = False,
+        review_on_anomaly: bool = False,
+        starting_balance: float = 100,
+        timeout_seconds: float = 15.0,
+        transport: AsyncHttpTransport | None = None,
+    ) -> "AsyncWallet":
+        public_client = AsyncAgentPayClient(base_url=base_url, timeout_seconds=timeout_seconds, transport=transport)
+        onboarding = await public_client.onboard(
+            {
+                "workspaceName": workspace_name or f"{owner} workspace",
+                "agentName": owner,
+                "dailyLimitUsd": daily_limit,
+                "requireApprovalOverUsd": require_approval_above,
+                "maxTransactionUsd": max_transaction,
+                "counterpartyAllowlist": whitelist,
+                "autoPauseOnAnomaly": auto_pause_on_anomaly,
+                "reviewOnAnomaly": review_on_anomaly,
+                "startingBalanceUsd": starting_balance,
+            }
+        )
+        client = public_client.with_api_key(onboarding["apiKey"]["key"])
+        return cls(
+            client=client,
+            workspace=onboarding["workspace"],
+            agent=onboarding["agent"],
+            wallet=onboarding.get("wallet"),
+            api_key=onboarding.get("apiKey"),
+            policy=onboarding.get("policy"),
+        )
+
+    @classmethod
+    async def connect(
+        cls,
+        *,
+        api_key: str | None = None,
+        base_url: str = "http://127.0.0.1:3000",
+        agent_id: str | None = None,
+        timeout_seconds: float = 15.0,
+        transport: AsyncHttpTransport | None = None,
+    ) -> "AsyncWallet":
+        resolved_api_key = api_key
+        if not resolved_api_key:
+            profile = load_login(base_url=base_url)
+            if not profile:
+                raise AuthenticationError("Missing api_key and no stored NORNR login found. Run `nornr login`.")
+            resolved_api_key = profile.api_key
+        client = AsyncAgentPayClient(base_url=base_url, api_key=resolved_api_key, timeout_seconds=timeout_seconds, transport=transport)
+        bootstrap = await client.get_bootstrap()
+        agent = next((item for item in bootstrap.get("agents", []) if item.get("id") == agent_id), None) if agent_id else None
+        return cls(
+            client=client,
+            workspace=bootstrap["workspace"],
+            agent=agent or _first_agent(bootstrap),
+            wallet=bootstrap.get("wallet"),
+            api_key={"key": resolved_api_key},
+        )
+
+    @property
+    def agent_id(self) -> str:
+        return self.agent["id"]
+
+    async def refresh(self) -> dict[str, Any]:
+        bootstrap = await self.client.get_bootstrap()
+        self.workspace = bootstrap["workspace"]
+        self.agent = next((item for item in bootstrap.get("agents", []) if item.get("id") == self.agent_id), _first_agent(bootstrap))
+        self.wallet = bootstrap.get("wallet")
+        return bootstrap
+
+    async def pay(
+        self,
+        *,
+        amount: float,
+        to: str,
+        purpose: str | None = None,
+        counterparty: str | None = None,
+        budget_tags: dict[str, str] | None = None,
+        dry_run: bool = False,
+        business_context: dict[str, Any] | None = None,
+        replay_context: dict[str, Any] | None = None,
+    ) -> DecisionRecord:
+        scoped_budget = current_budget_scope()
+        if scoped_budget and amount > scoped_budget.limit_usd:
+            raise ValidationError(
+                f"Local NORNR budget scope blocked {amount:.2f} USD because the block limit is {scoped_budget.limit_usd:.2f} USD",
+            )
+        if self.circuit_breaker:
+            try:
+                self.circuit_breaker.check(amount)
+            except RuntimeError as exc:
+                raise ValidationError(str(exc)) from exc
+        destination = to if _looks_like_evm_address(to) else None
+        resolved_counterparty = counterparty or (to if not destination else "external")
+        if scoped_budget and scoped_budget.counterparty and resolved_counterparty != scoped_budget.counterparty:
+            raise ValidationError(
+                f"Local NORNR budget scope only allows {scoped_budget.counterparty}, but got {resolved_counterparty}",
+            )
+        resolved_business_context = merge_business_context(business_context)
+        merged_budget_tags = dict(budget_tags or {})
+        if scoped_budget and scoped_budget.budget_tags:
+            merged_budget_tags = {**scoped_budget.budget_tags, **merged_budget_tags}
+        merged_budget_tags = _apply_business_context_tags(merged_budget_tags or None, resolved_business_context) or {}
+        resolved_purpose = purpose or f"agent payment to {resolved_counterparty}"
+        if scoped_budget and scoped_budget.purpose_prefix:
+            resolved_purpose = f"{scoped_budget.purpose_prefix}: {resolved_purpose}"
+        result = await self.client.create_payment_intent(
+            {
+                "agentId": self.agent_id,
+                "amountUsd": amount,
+                "counterparty": resolved_counterparty,
+                "destination": destination,
+                "budgetTags": merged_budget_tags or None,
+                "purpose": resolved_purpose,
+                "dryRun": bool(dry_run or (scoped_budget.dry_run if scoped_budget else False)),
+                "businessContext": resolved_business_context,
+                "executionContext": merge_replay_context(replay_context, default_source="wallet.pay.async"),
+            }
+        )
+        payment_intent = result.get("paymentIntent") or {}
+        if payment_intent.get("status") == "queued":
+            bootstrap = await self.client.get_bootstrap()
+            approval = _find_pending_approval(bootstrap, payment_intent.get("id", ""))
+            if approval:
+                approval = {
+                    **approval,
+                    "approvalUrl": _control_room_url(self.client.base_url, approval.get("id")),
+                }
+                result["approval"] = approval
+                result["approvalUrl"] = approval.get("approvalUrl")
+            result["requiresApproval"] = approval is not None
+        else:
+            result["requiresApproval"] = False
+        return DecisionRecord.from_payload(result)
+
+    async def pending_approvals(self) -> list[ApprovalRecord]:
+        bootstrap = await self.client.get_bootstrap()
+        return [record for record in (ApprovalRecord.from_payload(item) for item in bootstrap.get("approvals", [])) if record and record.status == "pending"]
+
+    async def approve_if_needed(self, payment: Mapping[str, Any] | DecisionRecord, *, comment: str | None = None) -> Any:
+        approval_payload = payment.get("approval") if isinstance(payment, Mapping) else None
+        approval = ApprovalRecord.from_payload(approval_payload)
+        if approval:
+            return await self.client.approve_intent(approval.id or "", {"comment": comment} if comment else {})
+        payment_intent = payment.get("paymentIntent") if isinstance(payment, Mapping) else None
+        status = payment_intent.get("status") if isinstance(payment_intent, Mapping) else None
+        if status != "queued":
+            return payment
+        bootstrap = await self.client.get_bootstrap()
+        pending_approval = _find_pending_approval(bootstrap, payment_intent["id"])
+        if not pending_approval:
+            raise AgentPayError("No pending approval found for payment intent")
+        return await self.client.approve_intent(pending_approval["id"], {"comment": comment} if comment else {})
+
+    async def balance(self) -> BalanceRecord:
+        wallet_state = await self.client.get_wallet()
+        self.wallet = wallet_state
+        return BalanceRecord.from_payload(wallet_state)
+
+    async def settle(self) -> dict[str, Any]:
+        return await self.client.run_settlement()
+
+    def budget(
+        self,
+        limit: float,
+        *,
+        counterparty: str | None = None,
+        purpose_prefix: str | None = None,
+        budget_tags: dict[str, str] | None = None,
+        dry_run: bool = False,
+    ) -> BudgetContext:
+        return budget_scope(
+            limit,
+            counterparty=counterparty,
+            purpose_prefix=purpose_prefix,
+            budget_tags=budget_tags,
+            dry_run=dry_run,
+        )
+
+    def enable_circuit_breaker(
+        self,
+        *,
+        max_requests: int = 10,
+        window_seconds: float = 1.0,
+        max_spend_usd: float | None = None,
+        max_velocity_usd: float | None = None,
+    ) -> "AsyncWallet":
+        self.circuit_breaker = LocalCircuitBreaker(
+            CircuitBreakerConfig(
+                max_requests=max_requests,
+                window_seconds=window_seconds,
+                max_spend_usd=max_spend_usd,
+                max_velocity_usd=max_velocity_usd,
+            )
+        )
+        return self
+
+    def guard(
+        self,
+        *,
+        amount: float,
+        counterparty: str,
+        purpose: str,
+        destination: str | None = None,
+        budget_tags: dict[str, str] | None = None,
+    ) -> Any:
+        from .guards import AsyncWalletGuard
+
+        return AsyncWalletGuard(
+            self,
+            amount=amount,
+            counterparty=counterparty,
+            purpose=purpose,
+            destination=destination,
+            budget_tags=budget_tags,
+        )
+
+    async def simulate_policy(self, *, template_id: str, rollout_mode: str = "shadow") -> PolicySimulationRecord:
+        return PolicySimulationRecord.from_payload(
+            await self.client.simulate_policy(
+                {
+                    "agentId": self.agent_id,
+                    "templateId": template_id,
+                    "rolloutMode": rollout_mode,
+                }
+            )
+        )
+
+    async def audit_review(self) -> AuditReviewRecord:
+        return AuditReviewRecord.from_payload(await self.client.get_audit_review())
+
+    async def finance_packet(self) -> FinancePacketRecord:
+        return (await self.audit_review()).finance_packet
+
+    async def timeline(self) -> TimelineReportRecord:
+        return TimelineReportRecord.from_payload(await self.client.get_intent_timeline())
+
+    async def weekly_review(self) -> WeeklyReviewRecord:
+        return WeeklyReviewRecord.from_payload(await self.client.get_weekly_review())
+
+    async def check(
+        self,
+        *,
+        intent: str,
+        cost: float,
+        counterparty: str,
+        budget_tags: dict[str, str] | None = None,
+        business_context: dict[str, Any] | None = None,
+    ) -> IntentCheckRecord:
+        decision = await self.pay(
+            amount=cost,
+            to=counterparty,
+            counterparty=counterparty,
+            purpose=intent,
+            budget_tags=budget_tags,
+            dry_run=True,
+            business_context=business_context or {"reason": intent},
+        )
+        return IntentCheckRecord.from_decision(decision, intent=intent, amount=cost)
+
+
+NornrClient = AgentPayClient
+NornrWallet = Wallet
