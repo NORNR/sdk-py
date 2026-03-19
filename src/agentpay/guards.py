@@ -2,12 +2,9 @@ from __future__ import annotations
 
 import functools
 import inspect
-from typing import Any, Callable, Literal, TypeVar, cast
+from typing import Any, Callable, Literal, Mapping, TypeVar, cast
 
-try:
-    from typing import ParamSpec
-except ImportError:  # pragma: no cover - Python 3.9 fallback
-    from typing_extensions import ParamSpec
+from typing_extensions import ParamSpec
 
 from .client import ApprovalRequiredError, AsyncWallet, DecisionRecord, Wallet
 from .replay import build_replay_context
@@ -18,6 +15,19 @@ R = TypeVar("R")
 
 def _resolve(value: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
     return value(*args, **kwargs) if callable(value) else value
+
+
+def _resolve_mapping(
+    value: Mapping[str, Any] | Callable[..., Mapping[str, Any] | None] | None,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> dict[str, Any] | None:
+    resolved = _resolve(value, args, kwargs)
+    if resolved is None:
+        return None
+    if not isinstance(resolved, Mapping):
+        raise TypeError("NORNR guard context hooks must resolve to a mapping or None")
+    return dict(resolved)
 
 
 class WalletGuard:
@@ -98,19 +108,27 @@ def nornr_guard(
     purpose: str | Callable[..., str],
     destination: str | Callable[..., str] | None = None,
     budget_tags: dict[str, str] | Callable[..., dict[str, str] | None] | None = None,
+    business_context: Mapping[str, Any] | Callable[..., Mapping[str, Any] | None] | None = None,
+    replay_context: Mapping[str, Any] | Callable[..., Mapping[str, Any] | None] | None = None,
 ) -> Callable[[Callable[P, R]], Callable[P, R]]:
     def decorator(func: Callable[P, R]) -> Callable[P, R]:
         if inspect.iscoroutinefunction(func):
             @functools.wraps(func)
             async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> Any:
                 async_wallet = cast(AsyncWallet, wallet)
+                resolved_business_context = _resolve_mapping(business_context, args, kwargs)
+                resolved_replay_context = {
+                    **build_replay_context(func, args, kwargs, source="nornr_guard"),
+                    **(_resolve_mapping(replay_context, args, kwargs) or {}),
+                }
                 decision = await async_wallet.pay(
                     amount=_resolve(amount, args, kwargs),
                     to=_resolve(destination, args, kwargs) or _resolve(counterparty, args, kwargs),
                     counterparty=_resolve(counterparty, args, kwargs),
                     purpose=_resolve(purpose, args, kwargs),
                     budget_tags=_resolve(budget_tags, args, kwargs),
-                    replay_context=build_replay_context(func, args, kwargs, source="nornr_guard"),
+                    business_context=resolved_business_context,
+                    replay_context=resolved_replay_context,
                 )
                 if decision.status != "approved":
                     raise ApprovalRequiredError.from_decision(decision)
@@ -121,13 +139,19 @@ def nornr_guard(
         @functools.wraps(func)
         def sync_wrapper(*args: P.args, **kwargs: P.kwargs) -> Any:
             sync_wallet = cast(Wallet, wallet)
+            resolved_business_context = _resolve_mapping(business_context, args, kwargs)
+            resolved_replay_context = {
+                **build_replay_context(func, args, kwargs, source="nornr_guard"),
+                **(_resolve_mapping(replay_context, args, kwargs) or {}),
+            }
             decision = sync_wallet.pay(
                 amount=_resolve(amount, args, kwargs),
                 to=_resolve(destination, args, kwargs) or _resolve(counterparty, args, kwargs),
                 counterparty=_resolve(counterparty, args, kwargs),
                 purpose=_resolve(purpose, args, kwargs),
                 budget_tags=_resolve(budget_tags, args, kwargs),
-                replay_context=build_replay_context(func, args, kwargs, source="nornr_guard"),
+                business_context=resolved_business_context,
+                replay_context=resolved_replay_context,
             )
             if decision.status != "approved":
                 raise ApprovalRequiredError.from_decision(decision)

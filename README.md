@@ -13,6 +13,8 @@ In practice, the SDK gives you four things in one surface:
 
 The published package name is `nornr-agentpay`, while the Python import remains `agentpay` and the lower-level client remains `AgentPayClient`. For new Python code, start with `NornrWallet` or `Wallet`.
 
+For a control-plane-first namespace above `Wallet`, use `NornrRuntime`.
+
 ## Default backend URL
 
 The SDK defaults to the hosted NORNR control plane at `https://nornr.com`.
@@ -43,13 +45,25 @@ Recommended production pattern:
 
 ## Install
 
+Fastest path:
+
+```bash
+pip install nornr-agentpay
+```
+
+Then start with exactly one of these:
+
+1. `NornrRuntime.execute(...)` for one governed action
+2. `BrowserCheckoutGuard` for browser-side paid actions
+3. `create_mcp_server(...)` for operator review and autonomous-agent control
+
 From this repo during local development:
 
 ```bash
 pip install -e packages/sdk-py
 ```
 
-PyPI install:
+Optional extras:
 
 ```bash
 pip install nornr-agentpay
@@ -81,15 +95,26 @@ export TWINE_PASSWORD=<your-pypi-token>
 python -m twine upload dist/*
 ```
 
-Minimal copy-pasteable examples live under [`examples/`](./examples):
+For a repeatable pre-release check without uploading, run:
 
-- [`01_basic_guard.py`](./examples/01_basic_guard.py)
-- [`02_async_wallet.py`](./examples/02_async_wallet.py)
-- [`03_pydantic_ai_agent.py`](./examples/03_pydantic_ai_agent.py)
-- [`08_framework_kits.py`](./examples/08_framework_kits.py)
-- [`09_monthly_close.py`](./examples/09_monthly_close.py)
-- [`10_weekly_finance_handoff.py`](./examples/10_weekly_finance_handoff.py)
-- [`13_openclaw_governance.py`](./examples/13_openclaw_governance.py)
+```bash
+npm run python-sdk:release-check
+```
+
+If you only run three examples, run these:
+
+1. [`14_runtime_namespace.py`](./examples/14_runtime_namespace.py)
+2. [`05_browser_checkout_guard.py`](./examples/05_browser_checkout_guard.py)
+3. [`16_mcp_review_flow.py`](./examples/16_mcp_review_flow.py)
+
+Everything else in [`examples/`](./examples) is secondary to those three golden paths.
+
+If you want copy-pasteable reference apps instead of smaller snippets, start with:
+
+- [`17_governed_runtime_app.py`](./examples/17_governed_runtime_app.py)
+- [`18_browser_checkout_app.py`](./examples/18_browser_checkout_app.py)
+- [`19_mcp_review_app.py`](./examples/19_mcp_review_app.py)
+- [`20_agent_zero_mcp_app.py`](./examples/20_agent_zero_mcp_app.py)
 
 ## License
 
@@ -184,6 +209,70 @@ Useful high-level methods:
 - `wallet.timeline()`
 - `wallet.weekly_review()`
 
+## Golden path 1: governed execution runtime
+
+The most important new SDK surface is the canonical governed action lifecycle.
+
+```python
+from agentpay import NornrWallet
+
+wallet = NornrWallet.connect(api_key="replace-with-nornr-api-key", base_url="https://nornr.com")
+
+record = wallet.execute_governed(
+    action_name="gpu-refresh",
+    amount=18,
+    to="modal",
+    counterparty="modal",
+    purpose="Launch one governed GPU refresh job",
+    callback=lambda: {"jobId": "job_123"},
+    receipt_id="receipt_123",
+    evidence={"surface": "worker", "jobType": "embedding-refresh"},
+)
+
+print(record.execution_status)
+print(record.to_summary_dict())
+```
+
+Useful runtime helpers:
+
+- `wallet.begin_governed_action(...)`
+- `wallet.resume_governed_action(...)`
+- `wallet.execute_governed(...)`
+- `run.to_handoff_dict()`
+- `run.attach_receipt_evidence(...)`
+- `run.attach_evidence(...)`
+- `run.attach_receipt(...)`
+- `run.complete(...)`
+- `run.fail(...)`
+- `run.wait_for_approval(...)`
+
+If you want the smallest drop-in version of this flow, start from [`17_governed_runtime_app.py`](./examples/17_governed_runtime_app.py).
+
+Async parity exists on `AsyncWallet` as well.
+
+## Control-plane-first runtime namespace
+
+If you want a single entrypoint that reads like NORNR's product model instead of the older wallet-first model:
+
+```python
+from agentpay import NornrRuntime
+
+runtime = NornrRuntime.connect(
+    api_key="replace-with-nornr-api-key",
+    base_url="https://nornr.com",
+)
+
+record = runtime.execute(
+    action_name="provider-call",
+    amount=5,
+    to="openai",
+    counterparty="openai",
+    purpose="Run one governed provider call",
+    callback=lambda: {"ok": True},
+    receipt_id="receipt_123",
+)
+```
+
 ## Productized kits
 
 The SDK now ships opinionated kits for the highest-signal operator outcomes.
@@ -206,6 +295,87 @@ The currently productized kits are:
 - `create_mcp_kit(wallet)`
 
 Each kit bundles the right helpers plus a recommended official governance pack.
+
+Kits can now validate and bootstrap themselves:
+
+```python
+from agentpay import NornrWallet, create_openai_agents_kit
+
+wallet = NornrWallet.connect(api_key="replace-with-nornr-api-key", base_url="https://nornr.com")
+kit = create_openai_agents_kit(wallet)
+
+print(kit.validate_environment())
+print(kit.bootstrap(mode="shadow"))
+print(kit.scaffold_config())
+```
+
+## Scenario templates
+
+The SDK now ships reusable scenario templates for the highest-signal integration lanes:
+
+- `browser_checkout_template()`
+- `paid_tool_call_template()`
+- `mcp_local_tool_template()`
+- `finance_close_template()`
+- `delegated_sub_agent_budget_template()`
+- `scenario_templates()`
+
+These are intended as reusable onboarding assets, not just examples.
+
+## Least-privilege key posture
+
+```python
+from agentpay import credential_posture, recommended_scopes
+
+template = recommended_scopes("openclaw")
+posture = credential_posture(template.scopes)
+
+print(template.to_dict())
+print(posture.to_dict())
+```
+
+## FastAPI middleware and governed routes
+
+```python
+from agentpay import governed_route, nornr_middleware
+
+app.middleware("http")(nornr_middleware())
+
+@app.post("/governed")
+@governed_route(
+    action_name="fastapi-governed-endpoint",
+    amount=lambda *args, **kwargs: 9,
+    counterparty=lambda *args, **kwargs: "openai",
+    purpose=lambda *args, **kwargs: "Serve one governed endpoint call",
+)
+async def governed_endpoint(request):
+    return {"ok": True, "traceId": request.state.nornr_trace_id}
+```
+
+## MCP: richer resources and prompts
+
+The MCP server now exposes more than tools:
+
+- resources:
+  - `nornr://finance-packet`
+  - `nornr://weekly-review`
+  - `nornr://intent-timeline`
+  - `nornr://pending-approvals`
+  - `nornr://anomaly-inbox`
+  - `nornr://policy-workbench`
+  - `nornr://finance-close`
+- prompts:
+  - `nornr.operator-guide`
+  - `nornr.policy-simulation`
+  - `nornr.finance-close`
+
+## Release discipline
+
+See:
+
+- [CHANGELOG](./CHANGELOG.md)
+- [COMPATIBILITY](./COMPATIBILITY.md)
+- [UPGRADING](./UPGRADING.md)
 
 ## Hosted finance workflows
 
@@ -258,6 +428,69 @@ Useful OpenClaw review surfaces:
 - `adapter.approve(payment_intent_id, comment=...)`
 - `adapter.reject(payment_intent_id, comment=...)`
 - `adapter.anomalies(counterparty=...)`
+
+## Least-privilege scopes
+
+The SDK now exposes explicit least-privilege scope templates instead of leaving every integration to guess.
+
+```python
+from agentpay import recommended_scopes, review_scopes
+
+template = recommended_scopes("openclaw")
+print(template.to_dict())
+
+review = review_scopes(["workspace:read", "audit:read"], surface="openclaw")
+print(review.to_dict())
+```
+
+Useful named surfaces:
+
+- `read-only`
+- `finance-close`
+- `browser-guard`
+- `mcp`
+- `openclaw`
+- `worker`
+
+## Webhook consumer verification
+
+The SDK now ships a Python-side verifier for NORNR webhook payloads.
+
+```python
+from agentpay import verify_webhook_request
+
+verified = verify_webhook_request(
+    secret="replace-with-webhook-secret",
+    payload=raw_body,
+    headers=request.headers,
+)
+
+print(verified.event_type)
+print(verified.payload["id"])
+```
+
+You can also route events through `dispatch_webhook_event(...)` after verification.
+
+## Counterparty review and delegated mandates
+
+Counterparty posture and sub-agent budget delegation now have first-class SDK helpers.
+
+```python
+from agentpay import NornrWallet
+
+wallet = NornrWallet.connect(api_key="replace-with-nornr-api-key", base_url="https://nornr.com")
+
+review = wallet.review_counterparty("openai")
+print(review.to_dict())
+
+mandate = wallet.delegate_mandate(
+    target_agent_id="agent_child",
+    daily_limit=15,
+    counterparty="openai",
+    purpose_prefix="delegated-research",
+)
+print(mandate.to_business_context())
+```
 - `adapter.intent_timeline()`
 - `adapter.review_bundle(counterparty=...)`
 - `adapter.audit_export()`
@@ -628,7 +861,7 @@ Current official packs focus on:
 - local MCP tools
 - finance close / export-heavy workflows
 
-## MCP server surface
+## Golden path 2: MCP review flow
 
 If you want NORNR to plug into MCP-native agent tooling, expose the wallet as a small stdio tool server:
 
@@ -663,7 +896,9 @@ nornr mcp serve
 
 The recommended official pack for local MCP clients is `mcp-local-tools-guarded`.
 
-## Browser checkout guard
+If you want a minimal operator review reference app instead of a lower-level snippet, start from [`19_mcp_review_app.py`](./examples/19_mcp_review_app.py).
+
+## Golden path 3: browser checkout guard
 
 For browser agents, add a purchase-aware guard before the agent clicks a checkout or fills payment details:
 
@@ -686,6 +921,8 @@ This is intentionally framework-agnostic so you can wire it into Playwright, bro
 
 The recommended official pack for browser agents is `browser-ops-guarded`.
 
+For checkout-like actions, passing `amount=` explicitly is still the preferred path. The browser guard can infer amount hints from DOM evidence, but high-risk taxonomies such as `checkout`, `vendor_purchase`, and `invoice_payment` now fail closed if the inferred amount is low-confidence.
+
 For callback-style browser automation:
 
 ```python
@@ -697,6 +934,24 @@ result = guard.guard_playwright_click(
     amount=24.0,
 )
 ```
+
+If you want stronger extraction without hard-coding the amount in your app, pass selectors for the checkout total and cart summary:
+
+```python
+result = guard.guard_playwright_click(
+    page,
+    url="https://platform.openai.com/checkout",
+    selector="button.buy-now",
+    amount=None,
+    text="Buy now",
+    capture_evidence=True,
+    amount_selector="[data-order-total]",
+    cart_selector="[data-order-summary]",
+    merchant_selector="[data-merchant-name]",
+)
+```
+
+If you want a minimal browser governance reference app instead of a small snippet, start from [`18_browser_checkout_app.py`](./examples/18_browser_checkout_app.py).
 
 ## Accounting bridge
 
@@ -820,12 +1075,30 @@ app = FastAPI()
 get_wallet = wallet_dependency(base_url="https://nornr.com")
 ```
 
+Canonical governed execution from a request handler:
+
+```python
+from agentpay import governed_execute
+
+record = await governed_execute(
+    request,
+    action_name="api-provider-call",
+    amount=9,
+    counterparty="openai",
+    purpose="Serve one governed endpoint call",
+    callback=lambda: {"ok": True},
+    business_context={"routeName": "api-provider-call"},
+)
+```
+
 LangGraph state integration:
 
 ```python
-from agentpay import record_decision
+from agentpay import record_decision, record_handoff, record_resume
 
 state = record_decision(state, decision)
+state = record_handoff(state, run)
+state = record_resume(state, approved_decision)
 ```
 
 ## Policy as code
@@ -847,7 +1120,30 @@ apply_policy(wallet, ResearchPolicy)
 
 NORNR now captures a redacted execution context for guarded calls, including the calling function, file, line, and sanitized inputs. Sensitive fields such as tokens, passwords, and auth headers are redacted by default.
 
-## Framework adapters
+## Secondary surfaces: framework adapters
+
+Wrapped provider calls now attach standardized NORNR business context including:
+
+- `provider`
+- `providerApi`
+- `operationKind`
+- `requestedModel`
+- `stream`
+- `toolCount`
+- `toolNames`
+- `messageCount`
+- `inputCount`
+
+All first-class agent tool adapters now expose the same governed operator surface:
+
+- `nornr_spend`
+- `nornr_approve`
+- `nornr_balance`
+- `nornr_pending_approvals`
+- `nornr_finance_packet`
+- `nornr_weekly_review`
+- `nornr_anomaly_inbox`
+- `nornr_review_bundle`
 
 ### OpenAI Agents SDK
 
@@ -886,6 +1182,51 @@ wallet = NornrWallet.create(
 
 tools = create_langchain_tools(wallet)
 ```
+
+### PydanticAI
+
+```python
+from agentpay import NornrWallet, create_pydanticai_tools
+
+wallet = NornrWallet.connect(api_key="replace-with-nornr-api-key", base_url="https://nornr.com")
+tools = create_pydanticai_tools(
+    wallet,
+    agent_name="incident-copilot",
+    model_name="gpt-4.1-mini",
+    business_context={"workflow": "incident-response"},
+)
+```
+
+If you already keep NORNR defaults in `NornrDeps`, use `create_pydanticai_tools_for(deps, ...)` instead of rebuilding the context each time.
+
+### CrewAI
+
+```python
+from agentpay import NornrWallet, create_crewai_tools
+
+wallet = NornrWallet.connect(api_key="replace-with-nornr-api-key", base_url="https://nornr.com")
+tools = create_crewai_tools(
+    wallet,
+    crew_id="crew_1",
+    task_id="task_7",
+    role="researcher",
+    business_context={"mission": "vendor-research"},
+)
+```
+
+If your CrewAI integration already has a task config object, use `create_crewai_task_tools(wallet, CrewTaskConfig(...))`.
+
+### Provider convenience wrappers
+
+If you want provider-native entrypoints instead of the generic wrappers:
+
+```python
+from agentpay import wrap_anthropic_client, wrap_openai_client
+```
+
+- `wrap_openai_client(...)` is the shortest path for OpenAI-style `responses` and `chat.completions`
+- `wrap_anthropic_client(...)` is the shortest path for Anthropic-style `messages`
+- `wrap(...)` and `wrap_async(...)` still exist for mixed or custom provider SDKs
 
 ## Lower-level client
 

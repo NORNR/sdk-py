@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-from typing import Any, Mapping, TypeAlias
+from typing import Any, Mapping, Union
 
-AmountLike: TypeAlias = Decimal | int | float | str
+from typing_extensions import TypeAlias
+
+AmountLike: TypeAlias = Union[Decimal, int, float, str]
 
 USD_QUANTUM = Decimal("0.01")
 ZERO_USD = Decimal("0.00")

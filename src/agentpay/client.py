@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 from .auth import DEFAULT_BASE_URL, load_login
 from .budgeting import BudgetContext, budget as budget_scope, current_budget_scope
 from .breakers import CircuitBreakerConfig, LocalCircuitBreaker
 from .context import merge_business_context
+from .counterparty import CounterpartyReview, review_counterparty as review_counterparty_sync, review_counterparty_async
+from .delegation import DelegatedMandate, create_delegated_mandate, create_delegated_mandate_async
 from .intent import IntentCheckRecord
 from .models import (
     AnomalyRecord,
@@ -61,6 +63,7 @@ from .models import (
 )
 from .money import AmountLike, usd_decimal, usd_float, usd_text
 from .replay import merge_replay_context
+from .runtime import AsyncGovernedActionRun, GovernedActionRun, GovernedExecutionRecord, default_run_ids
 from .transport import AsyncHttpTransport, SyncHttpTransport, TransportConfig
 
 
@@ -421,7 +424,7 @@ class AgentPayClient:
     def get_cost_report(self, fmt: str = "json") -> CostReportRecord | str:
         payload = self._request(f"/api/reporting/costs?format={fmt}", _RequestOptions(parse_json=fmt == "json"))
         if fmt != "json":
-            return payload
+            return str(payload)
         return CostReportRecord.from_payload(payload)
 
     def get_monthly_statement(self, month: str | None = None) -> MonthlyStatementRecord:
@@ -728,7 +731,7 @@ class AsyncAgentPayClient:
     async def get_cost_report(self, fmt: str = "json") -> CostReportRecord | str:
         payload = await self._request(f"/api/reporting/costs?format={fmt}", _RequestOptions(parse_json=fmt == "json"))
         if fmt != "json":
-            return payload
+            return str(payload)
         return CostReportRecord.from_payload(payload)
 
     async def get_monthly_statement(self, month: str | None = None) -> MonthlyStatementRecord:
@@ -921,7 +924,7 @@ def _first_agent(bootstrap: Mapping[str, Any]) -> dict[str, Any]:
     agents = bootstrap.get("agents") or []
     if not agents:
         raise AgentPayError("Wallet bootstrap did not return any agents")
-    return agents[0]
+    return cast(dict[str, Any], agents[0])
 
 
 def _find_pending_approval(bootstrap: Mapping[str, Any], payment_intent_id: str) -> dict[str, Any] | None:
@@ -1010,11 +1013,11 @@ class Wallet:
 
     @property
     def agent_id(self) -> str:
-        return self.agent["id"]
+        return str(self.agent["id"])
 
     @property
     def workspace_id(self) -> str:
-        return self.workspace["id"]
+        return str(self.workspace["id"])
 
     def close(self) -> None:
         self.client.close()
@@ -1259,6 +1262,148 @@ class Wallet:
         )
         return IntentCheckRecord.from_decision(decision, intent=intent, amount=usd_float(normalized_cost))
 
+    def delegate_mandate(
+        self,
+        *,
+        target_agent_id: str,
+        daily_limit: AmountLike,
+        counterparty: str | None = None,
+        purpose_prefix: str | None = None,
+        budget_tags: dict[str, str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        apply_budget_cap: bool = True,
+    ) -> DelegatedMandate:
+        return create_delegated_mandate(
+            self,
+            target_agent_id=target_agent_id,
+            daily_limit=daily_limit,
+            counterparty=counterparty,
+            purpose_prefix=purpose_prefix,
+            budget_tags=budget_tags,
+            metadata=metadata,
+            apply_budget_cap=apply_budget_cap,
+        )
+
+    def review_counterparty(self, counterparty: str) -> CounterpartyReview:
+        return review_counterparty_sync(self, counterparty)
+
+    def begin_governed_action(
+        self,
+        *,
+        action_name: str,
+        amount: AmountLike,
+        to: str,
+        purpose: str,
+        run_id: str | None = None,
+        intent_key: str | None = None,
+        idempotency_key: str | None = None,
+        counterparty: str | None = None,
+        budget_tags: dict[str, str] | None = None,
+        business_context: dict[str, Any] | None = None,
+        replay_context: dict[str, Any] | None = None,
+        dry_run: bool = False,
+    ) -> GovernedActionRun:
+        generated_run_id, generated_intent_key, generated_idempotency_key = default_run_ids(action_name)
+        resolved_run_id, resolved_intent_key, resolved_idempotency_key = (
+            run_id or generated_run_id,
+            intent_key or generated_intent_key,
+            idempotency_key or generated_idempotency_key,
+        )
+        enriched_context = {
+            **dict(business_context or {}),
+            "governedRun": {
+                "runId": resolved_run_id,
+                "intentKey": resolved_intent_key,
+                "idempotencyKey": resolved_idempotency_key,
+                "actionName": action_name,
+            },
+        }
+        decision = self.pay(
+            amount=amount,
+            to=to,
+            purpose=purpose,
+            counterparty=counterparty,
+            budget_tags=budget_tags,
+            dry_run=dry_run,
+            business_context=enriched_context,
+            replay_context=merge_replay_context(
+                {
+                    **dict(replay_context or {}),
+                    "runId": resolved_run_id,
+                    "intentKey": resolved_intent_key,
+                    "idempotencyKey": resolved_idempotency_key,
+                },
+                default_source="wallet.begin_governed_action",
+            ),
+        )
+        return GovernedActionRun(
+            wallet=self,
+            action_name=action_name,
+            decision=decision,
+            requested_amount_usd=usd_float(amount),
+            requested_counterparty=counterparty or to,
+            purpose=purpose,
+            run_id=resolved_run_id,
+            intent_key=resolved_intent_key,
+            idempotency_key=resolved_idempotency_key,
+            business_context=dict(enriched_context or {}),
+        )
+
+    def resume_governed_action(
+        self,
+        decision: DecisionRecord | Mapping[str, Any],
+        *,
+        action_name: str,
+        amount: AmountLike | None = None,
+        counterparty: str | None = None,
+        purpose: str | None = None,
+        business_context: dict[str, Any] | None = None,
+    ) -> GovernedActionRun:
+        resolved = decision if isinstance(decision, DecisionRecord) else DecisionRecord.from_payload(decision)
+        generated_run_id, generated_intent_key, generated_idempotency_key = default_run_ids(action_name)
+        return GovernedActionRun(
+            wallet=self,
+            action_name=action_name,
+            decision=resolved,
+            requested_amount_usd=usd_float(amount if amount is not None else resolved.amount_decimal),
+            requested_counterparty=counterparty or resolved.payment_intent.counterparty or "unknown",
+            purpose=purpose or resolved.payment_intent.purpose or action_name,
+            run_id=str((resolved.payment_intent.business_context or {}).get("governedRun", {}).get("runId") or generated_run_id),
+            intent_key=str((resolved.payment_intent.business_context or {}).get("governedRun", {}).get("intentKey") or generated_intent_key),
+            idempotency_key=str((resolved.payment_intent.business_context or {}).get("governedRun", {}).get("idempotencyKey") or generated_idempotency_key),
+            business_context=dict(business_context or resolved.payment_intent.business_context or {}),
+        )
+
+    def execute_governed(
+        self,
+        *,
+        action_name: str,
+        amount: AmountLike,
+        to: str,
+        purpose: str,
+        callback: Any,
+        counterparty: str | None = None,
+        budget_tags: dict[str, str] | None = None,
+        business_context: dict[str, Any] | None = None,
+        replay_context: dict[str, Any] | None = None,
+        dry_run: bool = False,
+        receipt_id: str | None = None,
+        evidence: Mapping[str, Any] | Any | None = None,
+        raise_on_error: bool = True,
+    ) -> GovernedExecutionRecord:
+        run = self.begin_governed_action(
+            action_name=action_name,
+            amount=amount,
+            to=to,
+            purpose=purpose,
+            counterparty=counterparty,
+            budget_tags=budget_tags,
+            business_context=business_context,
+            replay_context=replay_context,
+            dry_run=dry_run,
+        )
+        return run.execute(callback, receipt_id=receipt_id, evidence=evidence, raise_on_error=raise_on_error)
+
 
 @dataclass
 class AsyncWallet:
@@ -1341,11 +1486,11 @@ class AsyncWallet:
 
     @property
     def agent_id(self) -> str:
-        return self.agent["id"]
+        return str(self.agent["id"])
 
     @property
     def workspace_id(self) -> str:
-        return self.workspace["id"]
+        return str(self.workspace["id"])
 
     async def close(self) -> None:
         await self.client.close()
@@ -1592,6 +1737,148 @@ class AsyncWallet:
             business_context=business_context or {"reason": intent},
         )
         return IntentCheckRecord.from_decision(decision, intent=intent, amount=usd_float(normalized_cost))
+
+    async def delegate_mandate(
+        self,
+        *,
+        target_agent_id: str,
+        daily_limit: AmountLike,
+        counterparty: str | None = None,
+        purpose_prefix: str | None = None,
+        budget_tags: dict[str, str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        apply_budget_cap: bool = True,
+    ) -> DelegatedMandate:
+        return await create_delegated_mandate_async(
+            self,
+            target_agent_id=target_agent_id,
+            daily_limit=daily_limit,
+            counterparty=counterparty,
+            purpose_prefix=purpose_prefix,
+            budget_tags=budget_tags,
+            metadata=metadata,
+            apply_budget_cap=apply_budget_cap,
+        )
+
+    async def review_counterparty(self, counterparty: str) -> CounterpartyReview:
+        return await review_counterparty_async(self, counterparty)
+
+    async def begin_governed_action(
+        self,
+        *,
+        action_name: str,
+        amount: AmountLike,
+        to: str,
+        purpose: str,
+        run_id: str | None = None,
+        intent_key: str | None = None,
+        idempotency_key: str | None = None,
+        counterparty: str | None = None,
+        budget_tags: dict[str, str] | None = None,
+        business_context: dict[str, Any] | None = None,
+        replay_context: dict[str, Any] | None = None,
+        dry_run: bool = False,
+    ) -> AsyncGovernedActionRun:
+        generated_run_id, generated_intent_key, generated_idempotency_key = default_run_ids(action_name)
+        resolved_run_id, resolved_intent_key, resolved_idempotency_key = (
+            run_id or generated_run_id,
+            intent_key or generated_intent_key,
+            idempotency_key or generated_idempotency_key,
+        )
+        enriched_context = {
+            **dict(business_context or {}),
+            "governedRun": {
+                "runId": resolved_run_id,
+                "intentKey": resolved_intent_key,
+                "idempotencyKey": resolved_idempotency_key,
+                "actionName": action_name,
+            },
+        }
+        decision = await self.pay(
+            amount=amount,
+            to=to,
+            purpose=purpose,
+            counterparty=counterparty,
+            budget_tags=budget_tags,
+            dry_run=dry_run,
+            business_context=enriched_context,
+            replay_context=merge_replay_context(
+                {
+                    **dict(replay_context or {}),
+                    "runId": resolved_run_id,
+                    "intentKey": resolved_intent_key,
+                    "idempotencyKey": resolved_idempotency_key,
+                },
+                default_source="wallet.begin_governed_action.async",
+            ),
+        )
+        return AsyncGovernedActionRun(
+            wallet=self,
+            action_name=action_name,
+            decision=decision,
+            requested_amount_usd=usd_float(amount),
+            requested_counterparty=counterparty or to,
+            purpose=purpose,
+            run_id=resolved_run_id,
+            intent_key=resolved_intent_key,
+            idempotency_key=resolved_idempotency_key,
+            business_context=dict(enriched_context or {}),
+        )
+
+    def resume_governed_action(
+        self,
+        decision: DecisionRecord | Mapping[str, Any],
+        *,
+        action_name: str,
+        amount: AmountLike | None = None,
+        counterparty: str | None = None,
+        purpose: str | None = None,
+        business_context: dict[str, Any] | None = None,
+    ) -> AsyncGovernedActionRun:
+        resolved = decision if isinstance(decision, DecisionRecord) else DecisionRecord.from_payload(decision)
+        generated_run_id, generated_intent_key, generated_idempotency_key = default_run_ids(action_name)
+        return AsyncGovernedActionRun(
+            wallet=self,
+            action_name=action_name,
+            decision=resolved,
+            requested_amount_usd=usd_float(amount if amount is not None else resolved.amount_decimal),
+            requested_counterparty=counterparty or resolved.payment_intent.counterparty or "unknown",
+            purpose=purpose or resolved.payment_intent.purpose or action_name,
+            run_id=str((resolved.payment_intent.business_context or {}).get("governedRun", {}).get("runId") or generated_run_id),
+            intent_key=str((resolved.payment_intent.business_context or {}).get("governedRun", {}).get("intentKey") or generated_intent_key),
+            idempotency_key=str((resolved.payment_intent.business_context or {}).get("governedRun", {}).get("idempotencyKey") or generated_idempotency_key),
+            business_context=dict(business_context or resolved.payment_intent.business_context or {}),
+        )
+
+    async def execute_governed(
+        self,
+        *,
+        action_name: str,
+        amount: AmountLike,
+        to: str,
+        purpose: str,
+        callback: Any,
+        counterparty: str | None = None,
+        budget_tags: dict[str, str] | None = None,
+        business_context: dict[str, Any] | None = None,
+        replay_context: dict[str, Any] | None = None,
+        dry_run: bool = False,
+        receipt_id: str | None = None,
+        evidence: Mapping[str, Any] | Any | None = None,
+        raise_on_error: bool = True,
+    ) -> GovernedExecutionRecord:
+        run = await self.begin_governed_action(
+            action_name=action_name,
+            amount=amount,
+            to=to,
+            purpose=purpose,
+            counterparty=counterparty,
+            budget_tags=budget_tags,
+            business_context=business_context,
+            replay_context=replay_context,
+            dry_run=dry_run,
+        )
+        return await run.execute(callback, receipt_id=receipt_id, evidence=evidence, raise_on_error=raise_on_error)
 
 
 NornrClient = AgentPayClient

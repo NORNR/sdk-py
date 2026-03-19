@@ -212,7 +212,8 @@ class A2AEscrow:
             checks=checks,
             metadata=metadata,
         )
-        return self.client.submit_milestone_proof(agreement_id, milestone_id, payload)
+        response = self.client.submit_milestone_proof(agreement_id, milestone_id, payload)
+        return dict(response) if isinstance(response, Mapping) else {"result": response}
 
     def settle_handshake(
         self,

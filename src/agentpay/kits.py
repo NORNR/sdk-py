@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import importlib.util
 from typing import Any
 
 from .adapters import create_openai_agents_tools
@@ -9,6 +10,7 @@ from .client import Wallet
 from .langgraph import nornr_state_reducer, record_decision, state_business_context, state_context
 from .mcp import create_mcp_server, create_mcp_tools
 from .pydanticai import NornrDeps, create_pydanticai_tools
+from .templates import scenario_templates
 
 
 @dataclass(frozen=True)
@@ -28,6 +30,79 @@ class NornrKit:
             "quickstart": self.quickstart,
             "scenarios": list(self.scenarios),
             "componentKeys": sorted(self.components.keys()),
+        }
+
+    @property
+    def wallet(self) -> Wallet | None:
+        wallet = self.components.get("wallet")
+        return wallet if isinstance(wallet, Wallet) else None
+
+    def validate_environment(self) -> dict[str, Any]:
+        dependency_map = {
+            "openai-agents": ("agents",),
+            "pydanticai": ("pydantic_ai",),
+            "langgraph": ("langgraph",),
+            "browser-agent": ("playwright",),
+            "mcp": (),
+        }
+        modules = dependency_map.get(self.name, ())
+        missing = [module for module in modules if importlib.util.find_spec(module) is None]
+        return {
+            "kit": self.name,
+            "ok": not missing,
+            "missingModules": missing,
+            "recommendedPolicyPackId": self.recommended_policy_pack_id,
+            "firstRunChecklist": self.first_run_checklist(),
+        }
+
+    def bootstrap(self, *, mode: str = "shadow") -> dict[str, Any]:
+        if not self.wallet:
+            raise RuntimeError("Kit is missing wallet component")
+        if not self.recommended_policy_pack_id:
+            return {
+                "kit": self.name,
+                "mode": mode,
+                "status": "skipped",
+                "reason": "Kit has no recommended policy pack.",
+                "firstRunChecklist": self.first_run_checklist(),
+            }
+        if mode == "shadow":
+            replay = self.wallet.replay_policy_pack(self.recommended_policy_pack_id, mode=mode)
+            return {
+                "kit": self.name,
+                "mode": mode,
+                "status": "replayed",
+                "packId": self.recommended_policy_pack_id,
+                "summary": replay.to_dict(),
+                "firstRunChecklist": self.first_run_checklist(),
+            }
+        applied = self.wallet.apply_policy_pack(self.recommended_policy_pack_id, mode=mode)
+        return {
+            "kit": self.name,
+            "mode": mode,
+            "status": "applied",
+            "packId": self.recommended_policy_pack_id,
+            "summary": applied.to_dict(),
+            "firstRunChecklist": self.first_run_checklist(),
+        }
+
+    def first_run_checklist(self) -> list[str]:
+        steps = [
+            f"Install dependencies for the `{self.name}` surface.",
+            "Connect a NORNR wallet with least-privilege scopes.",
+        ]
+        if self.recommended_policy_pack_id:
+            steps.append(f"Replay the recommended policy pack `{self.recommended_policy_pack_id}` in shadow mode first.")
+        steps.append("Run one governed action and verify the approval/audit trail.")
+        return steps
+
+    def scaffold_config(self) -> dict[str, Any]:
+        normalized_scenarios = [item.lower().replace(" ", "-") for item in self.scenarios]
+        return {
+            "kit": self.name,
+            "recommendedPolicyPackId": self.recommended_policy_pack_id,
+            "scenarios": list(self.scenarios),
+            "templates": [item.to_dict() for item in scenario_templates() if any(term in item.name for term in normalized_scenarios)][:2],
         }
 
 

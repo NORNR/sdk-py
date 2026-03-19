@@ -12,6 +12,8 @@ from .client import AgentPayClient, AuthenticationError
 from .mcp import create_mcp_server
 from .pricing import estimate_cost
 from .client import Wallet
+from .scopes import credential_posture, recommended_scopes, review_scopes
+from .templates import scenario_templates
 
 
 def _write_env_file(path: Path, values: dict[str, str]) -> None:
@@ -83,6 +85,21 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_config.add_argument("--auth-path")
     mcp_config.add_argument("--agent-id")
     mcp_config.add_argument("--server-name", default="nornr")
+
+    scopes = subparsers.add_parser("scopes", help="Print least-privilege NORNR scope presets or review an existing key posture")
+    scopes.add_argument("--surface", default="mcp")
+    scopes.add_argument("--granted", nargs="*")
+
+    scenarios = subparsers.add_parser("scenario-templates", help="Print reusable scenario templates for the SDK")
+    scenarios.add_argument("--name")
+
+    simulate = subparsers.add_parser("simulate-policy", help="Run a policy simulation from the CLI")
+    simulate.add_argument("--template-id", required=True)
+    simulate.add_argument("--rollout-mode", default="shadow")
+    simulate.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    simulate.add_argument("--api-key")
+    simulate.add_argument("--auth-path")
+    simulate.add_argument("--agent-id")
     return parser
 
 
@@ -165,6 +182,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         _print_json(estimate.__dict__)
         return 0
 
+    if args.command == "scopes":
+        template = recommended_scopes(args.surface)
+        scope_payload = {"template": template.to_dict()}
+        if args.granted:
+            scope_payload["review"] = review_scopes(args.granted, surface=args.surface).to_dict()
+            scope_payload["credentialPosture"] = credential_posture(args.granted).to_dict()
+        _print_json(scope_payload)
+        return 0
+
+    if args.command == "scenario-templates":
+        items = scenario_templates()
+        if args.name:
+            items = [item for item in items if item.name == args.name]
+        _print_json([item.to_dict() for item in items])
+        return 0
+
     if args.command == "debug":
         resolved_base_url = _resolve_base_url(args.base_url)
         api_key = _resolve_api_key(args.api_key, resolved_base_url, args.auth_path)
@@ -174,7 +207,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         approval = next((item for item in approvals if item.get("id") == args.resource_id or item.get("paymentIntentId") == args.resource_id), None)
         timeline = client.get_intent_timeline()
         timeline_entry = next((item for item in timeline.get("items", []) if item.get("id") == args.resource_id), None)
-        payload = {
+        payload: dict[str, object] = {
             "approval": approval,
             "timeline": timeline_entry,
             "resourceId": args.resource_id,
@@ -195,6 +228,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print_json(client.reject_intent(args.approval_id, {"comment": "Rejected from NORNR rescue CLI"}))
             return 0
         raise SystemExit("Unknown action")
+
+    if args.command == "simulate-policy":
+        wallet = _resolve_wallet(args.api_key, args.base_url, args.auth_path, getattr(args, "agent_id", None))
+        _print_json(wallet.simulate_policy(template_id=args.template_id, rollout_mode=args.rollout_mode).to_dict())
+        return 0
 
     if args.command == "mcp":
         if args.mcp_command == "serve":

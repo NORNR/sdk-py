@@ -166,6 +166,28 @@ TOOL_DEFINITIONS: tuple[McpToolDefinition, ...] = (
         description="Return the recent governed intent timeline for the workspace.",
         input_schema={"type": "object", "properties": {}},
     ),
+    McpToolDefinition(
+        name="nornr.anomaly_inbox",
+        description="Return open anomaly signals for the current NORNR workspace.",
+        input_schema={"type": "object", "properties": {}},
+    ),
+    McpToolDefinition(
+        name="nornr.policy_simulation",
+        description="Run a policy-pack simulation for a template or candidate pack before rollout.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "template_id": {"type": "string"},
+                "rollout_mode": {"type": "string"},
+            },
+            "required": ["template_id"],
+        },
+    ),
+    McpToolDefinition(
+        name="nornr.review_bundle",
+        description="Return one bundled operator view of pending approvals, anomalies, timeline, and finance posture.",
+        input_schema={"type": "object", "properties": {}},
+    ),
 )
 
 
@@ -206,7 +228,71 @@ def list_mcp_resources() -> list[dict[str, Any]]:
             "description": "Pending approval queue for the governed workspace.",
             "mimeType": "application/json",
         },
+        {
+            "uri": "nornr://anomaly-inbox",
+            "name": "Anomaly Inbox",
+            "description": "Open anomaly signals that may require operator review.",
+            "mimeType": "application/json",
+        },
+        {
+            "uri": "nornr://policy-workbench",
+            "name": "Policy Workbench",
+            "description": "Current policy workbench state and rollout guidance.",
+            "mimeType": "application/json",
+        },
+        {
+            "uri": "nornr://finance-close",
+            "name": "Finance Close",
+            "description": "Finance-close oriented bundle combining finance packet, weekly review, and monthly statement.",
+            "mimeType": "application/json",
+        },
     ]
+
+
+def list_mcp_prompts() -> list[dict[str, Any]]:
+    return [
+        {
+            "name": "nornr.operator-guide",
+            "description": "Guide an operator through approval, anomaly, and audit review before allowing a risky action to proceed.",
+            "arguments": [],
+        },
+        {
+            "name": "nornr.policy-simulation",
+            "description": "Explain how to simulate and review a policy pack before rollout.",
+            "arguments": [{"name": "template_id", "required": False}],
+        },
+        {
+            "name": "nornr.finance-close",
+            "description": "Explain how to hand a governed action trail to finance with weekly review and close-ready exports.",
+            "arguments": [],
+        },
+    ]
+
+
+def get_mcp_prompt(name: str, arguments: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    args = dict(arguments or {})
+    if name == "nornr.operator-guide":
+        text = (
+            "Review the approval queue, anomaly signals, and timeline before allowing the action to continue. "
+            "If the action is unusual, route it to a human. Keep the finance packet and audit export attached."
+        )
+    elif name == "nornr.policy-simulation":
+        template_id = args.get("template_id") or "template_id"
+        text = (
+            f"Simulate NORNR policy template `{template_id}` in shadow mode first. "
+            "Review candidate changes, anomaly posture, and operator impact before rollout."
+        )
+    elif name == "nornr.finance-close":
+        text = (
+            "Assemble the finance packet, weekly review, and monthly statement for the same governed trail. "
+            "Do not treat finance export as separate from the decision record."
+        )
+    else:
+        raise KeyError(f"Unknown NORNR MCP prompt: {name}")
+    return {
+        "description": name,
+        "messages": [{"role": "user", "content": {"type": "text", "text": text}}],
+    }
 
 
 def create_mcp_tools(wallet: Wallet) -> list[McpTool]:
@@ -239,20 +325,24 @@ def create_mcp_tools(wallet: Wallet) -> list[McpTool]:
             business_context=arguments.get("business_context"),
             replay_context={"source": "mcp.request_spend"},
         )
-        return decision.to_dict()
+        payload = decision.to_dict()
+        payload["controlRoomUrl"] = decision.approval_url or f"{wallet.client.base_url.rstrip('/')}/app"
+        return payload
 
     def approve_spend(arguments: dict[str, Any]) -> dict[str, Any]:
         approval_id = arguments.get("approval_id")
         payment_intent_id = arguments.get("payment_intent_id")
         comment = arguments.get("comment")
         if approval_id:
-            return wallet.client.approve_intent(str(approval_id), {"comment": comment} if comment else {})
+            payload = wallet.client.approve_intent(str(approval_id), {"comment": comment} if comment else {})
+            return dict(payload) if isinstance(payload, Mapping) else {"result": payload}
         if payment_intent_id:
             bootstrap = wallet.refresh()
             approval = _find_pending_approval(bootstrap, str(payment_intent_id))
             if not approval:
                 raise AgentPayError("No pending approval found for payment intent")
-            return wallet.client.approve_intent(approval["id"], {"comment": comment} if comment else {})
+            payload = wallet.client.approve_intent(approval["id"], {"comment": comment} if comment else {})
+            return dict(payload) if isinstance(payload, Mapping) else {"result": payload}
         raise ValueError("approve_spend requires approval_id or payment_intent_id")
 
     def reject_spend(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -260,7 +350,8 @@ def create_mcp_tools(wallet: Wallet) -> list[McpTool]:
         if not approval_id:
             raise ValueError("reject_spend requires approval_id")
         comment = arguments.get("comment")
-        return wallet.reject(approval_id, comment=comment)
+        payload = wallet.reject(approval_id, comment=comment)
+        return dict(payload) if isinstance(payload, Mapping) else {"result": payload}
 
     def pending_approvals(arguments: dict[str, Any]) -> list[dict[str, Any]]:
         _ = arguments
@@ -282,6 +373,31 @@ def create_mcp_tools(wallet: Wallet) -> list[McpTool]:
         _ = arguments
         return wallet.timeline().to_dict()
 
+    def anomaly_inbox(arguments: dict[str, Any]) -> list[dict[str, Any]]:
+        _ = arguments
+        return [record.to_dict() for record in wallet.client.list_anomalies()]
+
+    def policy_simulation(arguments: dict[str, Any]) -> dict[str, Any]:
+        template_id = str(arguments.get("template_id") or "")
+        if not template_id:
+            raise ValueError("policy_simulation requires template_id")
+        rollout_mode = str(arguments.get("rollout_mode") or "shadow")
+        return wallet.simulate_policy(template_id=template_id, rollout_mode=rollout_mode).to_dict()
+
+    def review_bundle(arguments: dict[str, Any]) -> dict[str, Any]:
+        _ = arguments
+        timeline = wallet.timeline().to_dict()
+        finance_packet = wallet.finance_packet().to_dict()
+        approvals = [approval.to_dict() for approval in wallet.pending_approvals()]
+        anomalies = [record.to_dict() for record in wallet.client.list_anomalies()]
+        return {
+            "timeline": timeline,
+            "financePacket": finance_packet,
+            "pendingApprovals": approvals,
+            "anomalies": anomalies,
+            "controlRoomUrl": f"{wallet.client.base_url.rstrip('/')}/app",
+        }
+
     handlers = {
         "nornr.check_spend": check_spend,
         "nornr.request_spend": request_spend,
@@ -292,6 +408,9 @@ def create_mcp_tools(wallet: Wallet) -> list[McpTool]:
         "nornr.finance_packet": finance_packet,
         "nornr.weekly_review": weekly_review,
         "nornr.intent_timeline": intent_timeline,
+        "nornr.anomaly_inbox": anomaly_inbox,
+        "nornr.policy_simulation": policy_simulation,
+        "nornr.review_bundle": review_bundle,
     }
     return [
         McpTool(
@@ -371,6 +490,7 @@ class NornrMcpServer:
             "capabilities": {
                 "tools": self.list_tools(),
                 "resources": self.list_resources(),
+                "prompts": list_mcp_prompts(),
             },
         }
 
@@ -409,6 +529,17 @@ class NornrMcpServer:
             return self.wallet.timeline().to_dict()
         if uri == "nornr://pending-approvals":
             return [approval.to_dict() for approval in self.wallet.pending_approvals()]
+        if uri == "nornr://anomaly-inbox":
+            return [record.to_dict() for record in self.wallet.client.list_anomalies()]
+        if uri == "nornr://policy-workbench":
+            return self.wallet.client.get_policy_workbench().to_dict()
+        if uri == "nornr://finance-close":
+            return {
+                "financePacket": self.wallet.finance_packet().to_dict(),
+                "weeklyReview": self.wallet.weekly_review().to_dict(),
+                "monthlyStatement": self.wallet.client.get_monthly_statement().to_dict(),
+                "controlRoomUrl": f"{self.wallet.client.base_url.rstrip('/')}/app",
+            }
         raise KeyError(f"Unknown NORNR MCP resource: {uri}")
 
     def handle_message(self, message: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -427,7 +558,11 @@ class NornrMcpServer:
                 {
                     "protocolVersion": protocol_version,
                     "serverInfo": {"name": self.server_name, "version": self.version},
-                    "capabilities": {"tools": {"listChanged": False}},
+                    "capabilities": {
+                        "tools": {"listChanged": False},
+                        "resources": {"listChanged": False},
+                        "prompts": {"listChanged": False},
+                    },
                 },
             )
         if method == "notifications/initialized":
@@ -438,6 +573,27 @@ class NornrMcpServer:
             return _build_result(msg_id, {"tools": self.list_tools()})
         if method == "resources/list":
             return _build_result(msg_id, {"resources": self.list_resources()})
+        if method == "prompts/list":
+            return _build_result(msg_id, {"prompts": list_mcp_prompts()})
+        if method == "prompts/get":
+            prompt_name = params.get("name")
+            if not isinstance(prompt_name, str) or not prompt_name:
+                raise McpProtocolError(INVALID_PARAMS, "prompts/get requires a string prompt name.", message_id=msg_id)
+            prompt_arguments = params.get("arguments")
+            if prompt_arguments is not None and not isinstance(prompt_arguments, Mapping):
+                raise McpProtocolError(INVALID_PARAMS, "prompts/get arguments must be a JSON object.", message_id=msg_id)
+            try:
+                prompt_payload = get_mcp_prompt(prompt_name, prompt_arguments)
+            except Exception as exc:
+                return _build_result(
+                    msg_id,
+                    {
+                        "description": str(prompt_name),
+                        "messages": [{"role": "user", "content": {"type": "text", "text": f"{type(exc).__name__}: {exc}"}}],
+                        "isError": True,
+                    },
+                )
+            return _build_result(msg_id, prompt_payload)
         if method == "resources/read":
             uri = params.get("uri")
             if not isinstance(uri, str) or not uri:

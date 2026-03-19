@@ -43,7 +43,7 @@ def _should_retry(
 
 
 def _retry_delay(config: TransportConfig, attempt: int) -> float:
-    return config.retry_backoff_seconds * (2**attempt)
+    return float(config.retry_backoff_seconds * (2**attempt))
 
 
 class SyncHttpTransport:
