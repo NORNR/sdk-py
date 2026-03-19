@@ -288,6 +288,8 @@ def render_openclaw_skill_markdown(
     return f"""---
 name: {skill_name}
 description: Put policy before paid actions, require approval for risky autonomous actions, and keep a finance-ready audit trail.
+homepage: https://github.com/NORNR/sdk-py
+metadata: {{"openclaw":{{"homepage":"https://github.com/NORNR/sdk-py","primaryEnv":"NORNR_API_KEY","requires":{{"env":["NORNR_API_KEY"],"anyBins":["python","python3"]}}}}}}
 ---
 
 # {skill_name}
