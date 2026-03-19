@@ -141,7 +141,7 @@ class RecordModel(Mapping[str, Any]):
 
     def to_pydantic(self) -> Any:
         if not PYDANTIC_AVAILABLE or self._pydantic_model is None:
-            raise RuntimeError("Install pydantic to use model validation helpers: pip install 'agentpay[pydantic]'")
+            raise RuntimeError("Install pydantic to use model validation helpers: pip install 'nornr-agentpay[pydantic]'")
         return self._pydantic_model.model_validate(self.to_dict())
 
 

@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agentpay"
+name = "nornr-agentpay"
 version = "0.1.0"
 description = "Python SDK for NORNR"
 readme = "README.md"

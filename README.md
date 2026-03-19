@@ -11,7 +11,7 @@ In practice, the SDK gives you four things in one surface:
 - `Control` - route actions through approvals, queues, rejection, and operator review
 - `Accounting` - keep receipt trail, finance packet, and export-ready records attached to the same decision
 
-The published package name remains `agentpay` and the lower-level client remains `AgentPayClient` for backward compatibility. For new Python code, start with `NornrWallet` or `Wallet`.
+The published package name is `nornr-agentpay`, while the Python import remains `agentpay` and the lower-level client remains `AgentPayClient`. For new Python code, start with `NornrWallet` or `Wallet`.
 
 ## Default backend URL
 
@@ -49,18 +49,18 @@ From this repo during local development:
 pip install -e packages/sdk-py
 ```
 
-Planned PyPI install after the first public package release:
+PyPI install:
 
 ```bash
-pip install agentpay
-pip install "agentpay[async]"
-pip install "agentpay[pydantic]"
-pip install "agentpay[openai-agents]"
-pip install "agentpay[langchain]"
-pip install "agentpay[crewai]"
+pip install nornr-agentpay
+pip install "nornr-agentpay[async]"
+pip install "nornr-agentpay[pydantic]"
+pip install "nornr-agentpay[openai-agents]"
+pip install "nornr-agentpay[langchain]"
+pip install "nornr-agentpay[crewai]"
 ```
 
-The `agentpay` package name is reserved in this repo and the package metadata is ready for release, but the first PyPI upload has not been published yet from this workspace.
+The PyPI distribution name is `nornr-agentpay`. The import path stays `agentpay`.
 
 ## PyPI release prep
 

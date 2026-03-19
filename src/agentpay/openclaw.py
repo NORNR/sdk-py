@@ -333,7 +333,7 @@ Add these if you want the finance-close paths too:
 This skill delegates governance decisions to the official NORNR Python SDK, `agentpay`.
 
 - Install source: `requirements.txt`
-- Pinned SDK source: `https://github.com/NORNR/sdk-py/tree/bbe8bfc`
+- Pinned PyPI package: `nornr-agentpay==0.1.0`
 - Local bridge: `{script_name}`
 
 ## Commands
