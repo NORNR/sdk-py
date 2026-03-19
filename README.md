@@ -1,8 +1,15 @@
 # agentpay
 
-Python SDK for [NORNR](https://nornr.com), the control layer before agent spend happens.
+Python SDK for [NORNR](https://nornr.com), the control plane for AI agents operating with real budgets.
 
-NORNR sits before provider spend, vendor actions, or paid tool calls. It decides whether spend is `approved`, `queued`, or `rejected`, then leaves behind an audit trail your operators and finance team can actually use.
+NORNR sits between agent intent and real-world execution. It evaluates whether an action should happen, routes larger or riskier actions into approval, surfaces anomaly posture before it hardens into normal behavior, and leaves behind a finance-ready audit trail after the action completes.
+
+In practice, the SDK gives you four things in one surface:
+
+- `Policy` - define what agents are allowed to do before money moves
+- `Detection` - surface unusual spend, suspicious counterparties, or risky autonomous posture
+- `Control` - route actions through approvals, queues, rejection, and operator review
+- `Accounting` - keep receipt trail, finance packet, and export-ready records attached to the same decision
 
 The published package name remains `agentpay` and the lower-level client remains `AgentPayClient` for backward compatibility. For new Python code, start with `NornrWallet` or `Wallet`.
 
