@@ -303,11 +303,38 @@ Use NORNR as the control layer before an OpenClaw skill triggers a paid action, 
 - When finance or operations need one defensible decision record after the action completes
 - When prompt-injected or unusual autonomous spend should surface as reviewable posture instead of silent execution
 
+## Installation
+
+- `python -m pip install -r requirements.txt`
+
 ## Required environment
 
 - `NORNR_API_KEY`
 - `NORNR_BASE_URL` (optional, defaults to `https://nornr.com`)
 - `NORNR_AGENT_ID` or a stored NORNR login profile
+
+## Recommended API key scope
+
+Minimum action scope for the full skill surface:
+
+- `payments:write`
+- `workspace:read`
+- `approvals:write`
+- `events:read`
+- `audit:read`
+
+Add these if you want the finance-close paths too:
+
+- `reports:read`
+- `webhooks:read`
+
+## Dependency provenance
+
+This skill delegates governance decisions to the official NORNR Python SDK, `agentpay`.
+
+- Install source: `requirements.txt`
+- Pinned SDK source: `https://github.com/NORNR/sdk-py/tree/bbe8bfc`
+- Local bridge: `{script_name}`
 
 ## Commands
 

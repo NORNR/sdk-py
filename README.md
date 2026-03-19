@@ -43,43 +43,41 @@ Recommended production pattern:
 
 ## Install
 
-Public package:
-
-```bash
-pip install agentpay
-```
-
-With async extras:
-
-```bash
-pip install "agentpay[async]"
-```
-
-With Pydantic validation helpers:
-
-```bash
-pip install "agentpay[pydantic]"
-```
-
-With framework adapters:
-
-```bash
-pip install "agentpay[openai-agents]"
-pip install "agentpay[langchain]"
-pip install "agentpay[crewai]"
-```
-
 From this repo during local development:
 
 ```bash
 pip install -e packages/sdk-py
 ```
 
+Planned PyPI install after the first public package release:
+
+```bash
+pip install agentpay
+pip install "agentpay[async]"
+pip install "agentpay[pydantic]"
+pip install "agentpay[openai-agents]"
+pip install "agentpay[langchain]"
+pip install "agentpay[crewai]"
+```
+
+The `agentpay` package name is reserved in this repo and the package metadata is ready for release, but the first PyPI upload has not been published yet from this workspace.
+
+## PyPI release prep
+
+Build a release locally:
+
+```bash
+python3 scripts/python-sdk-setup-dev.py
+cd packages/sdk-py
+python -m build
+python -m twine check dist/*
+```
+
 To build and publish the package to PyPI when you're ready:
 
 ```bash
-python -m pip install -U build twine
-python -m build
+export TWINE_USERNAME=__token__
+export TWINE_PASSWORD=<your-pypi-token>
 python -m twine upload dist/*
 ```
 
