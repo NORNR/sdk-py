@@ -12,12 +12,12 @@ dependencies = ["typing-extensions>=4.12"]
 authors = [
   { name = "NORNR" }
 ]
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 keywords = ["ai-agents", "agent-governance", "approvals", "audit-trail", "budget-controls"]
 urls = { Homepage = "https://nornr.com", Documentation = "https://nornr.com/quickstart", Repository = "https://github.com/NORNR/sdk-py", Issues = "https://github.com/NORNR/sdk-py/issues" }
 classifiers = [
   "Programming Language :: Python :: 3",
-  "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent"
 ]
 
@@ -38,7 +38,6 @@ nornr = "agentpay.cli:main"
 [tool.setuptools]
 package-dir = { "" = "src" }
 include-package-data = true
-license-files = ["LICENSE"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
