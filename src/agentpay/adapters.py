@@ -21,6 +21,14 @@ def _payment_summary(payload: Any) -> str:
     )
 
 
+def _json_summary(payload: Any) -> str:
+    if hasattr(payload, "to_summary_dict"):
+        return json.dumps(payload.to_summary_dict())
+    if hasattr(payload, "to_dict"):
+        return json.dumps(payload.to_dict())
+    return json.dumps(payload)
+
+
 def _budget_tags(team: str | None, project: str | None, customer: str | None, cost_center: str | None) -> dict[str, str] | None:
     tags = {
         "team": team,
@@ -90,12 +98,30 @@ def create_openai_agents_tools(wallet: Wallet) -> list[Callable[..., str]]:
     def nornr_balance() -> str:
         """Return the current NORNR wallet balance for this agent workspace."""
 
-        return json.dumps(wallet.balance())
+        return _json_summary(wallet.balance())
+
+    def nornr_pending_approvals() -> str:
+        """Return pending NORNR approvals that still need an operator decision."""
+
+        return json.dumps([approval.to_dict() for approval in wallet.pending_approvals()])
+
+    def nornr_finance_packet() -> str:
+        """Return the current finance packet summary attached to the governed workspace."""
+
+        return _json_summary(wallet.finance_packet())
+
+    def nornr_weekly_review() -> str:
+        """Return the current weekly review summary for this NORNR workspace."""
+
+        return _json_summary(wallet.weekly_review())
 
     return [
         _decorate_openai_tool(nornr_spend),
         _decorate_openai_tool(nornr_approve),
         _decorate_openai_tool(nornr_balance),
+        _decorate_openai_tool(nornr_pending_approvals),
+        _decorate_openai_tool(nornr_finance_packet),
+        _decorate_openai_tool(nornr_weekly_review),
     ]
 
 
@@ -136,10 +162,28 @@ def create_langchain_tools(wallet: Wallet) -> list[Any]:
     def nornr_balance() -> str:
         """Return the current NORNR wallet balance for this agent workspace."""
 
-        return json.dumps(wallet.balance())
+        return _json_summary(wallet.balance())
+
+    def nornr_pending_approvals() -> str:
+        """Return pending NORNR approvals that still need an operator decision."""
+
+        return json.dumps([approval.to_dict() for approval in wallet.pending_approvals()])
+
+    def nornr_finance_packet() -> str:
+        """Return the current finance packet summary attached to the governed workspace."""
+
+        return _json_summary(wallet.finance_packet())
+
+    def nornr_weekly_review() -> str:
+        """Return the current weekly review summary for this NORNR workspace."""
+
+        return _json_summary(wallet.weekly_review())
 
     return [
         _decorate_langchain_tool(nornr_spend, name="nornr_spend"),
         _decorate_langchain_tool(nornr_approve, name="nornr_approve"),
         _decorate_langchain_tool(nornr_balance, name="nornr_balance"),
+        _decorate_langchain_tool(nornr_pending_approvals, name="nornr_pending_approvals"),
+        _decorate_langchain_tool(nornr_finance_packet, name="nornr_finance_packet"),
+        _decorate_langchain_tool(nornr_weekly_review, name="nornr_weekly_review"),
     ]

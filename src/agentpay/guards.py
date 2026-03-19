@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import functools
 import inspect
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, Literal, TypeVar, cast
 
 try:
     from typing import ParamSpec
@@ -51,7 +51,7 @@ class WalletGuard:
             raise ApprovalRequiredError.from_decision(self.decision)
         return self.decision
 
-    def __exit__(self, exc_type, exc, tb) -> bool:
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> Literal[False]:
         return False
 
 
@@ -86,7 +86,7 @@ class AsyncWalletGuard:
             raise ApprovalRequiredError.from_decision(self.decision)
         return self.decision
 
-    async def __aexit__(self, exc_type, exc, tb) -> bool:
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> Literal[False]:
         return False
 
 
@@ -103,7 +103,8 @@ def nornr_guard(
         if inspect.iscoroutinefunction(func):
             @functools.wraps(func)
             async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> Any:
-                decision = await wallet.pay(
+                async_wallet = cast(AsyncWallet, wallet)
+                decision = await async_wallet.pay(
                     amount=_resolve(amount, args, kwargs),
                     to=_resolve(destination, args, kwargs) or _resolve(counterparty, args, kwargs),
                     counterparty=_resolve(counterparty, args, kwargs),
@@ -119,7 +120,8 @@ def nornr_guard(
 
         @functools.wraps(func)
         def sync_wrapper(*args: P.args, **kwargs: P.kwargs) -> Any:
-            decision = wallet.pay(
+            sync_wallet = cast(Wallet, wallet)
+            decision = sync_wallet.pay(
                 amount=_resolve(amount, args, kwargs),
                 to=_resolve(destination, args, kwargs) or _resolve(counterparty, args, kwargs),
                 counterparty=_resolve(counterparty, args, kwargs),

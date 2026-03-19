@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from .auth import DEFAULT_BASE_URL
 from .client import AuthenticationError, Wallet
@@ -24,7 +24,7 @@ def wallet_dependency(
     agent_id: str | None = None,
     api_key_header: str = "x-api-key",
     transport: Any | None = None,
-) -> Callable[..., Wallet]:
+) -> Callable[..., Awaitable[Wallet]]:
     """Create a FastAPI dependency that resolves a NORNR wallet from request headers."""
 
     try:

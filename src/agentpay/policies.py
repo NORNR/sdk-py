@@ -53,7 +53,7 @@ class Policy:
 
 
 def apply_policy(target: Any, policy: Type[Policy] | PolicyDefinition, *, agent_id: str | None = None) -> Any:
-    payload = policy.to_payload() if hasattr(policy, "to_payload") else policy.definition().to_payload()
+    payload = policy.to_payload() if isinstance(policy, PolicyDefinition) else policy.definition().to_payload()
     if hasattr(target, "client") and hasattr(target, "agent_id"):
         return target.client.create_policy(target.agent_id, payload)
     if agent_id is None:

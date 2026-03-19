@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
+from decimal import Decimal
+from typing import Any, Literal
+
+from .money import AmountLike, usd_decimal
 
 
 @dataclass(frozen=True)
 class BudgetScope:
-    limit_usd: float
+    limit_usd: Decimal
     counterparty: str | None = None
     purpose_prefix: str | None = None
     budget_tags: dict[str, str] | None = None
@@ -19,7 +23,7 @@ _ACTIVE_BUDGET_SCOPE: ContextVar[BudgetScope | None] = ContextVar("nornr_active_
 class BudgetContext:
     def __init__(
         self,
-        limit: float,
+        limit: AmountLike,
         *,
         counterparty: str | None = None,
         purpose_prefix: str | None = None,
@@ -27,7 +31,7 @@ class BudgetContext:
         dry_run: bool = False,
     ) -> None:
         self.scope = BudgetScope(
-            limit_usd=float(limit),
+            limit_usd=usd_decimal(limit),
             counterparty=counterparty,
             purpose_prefix=purpose_prefix,
             budget_tags=dict(budget_tags or {}) or None,
@@ -39,7 +43,7 @@ class BudgetContext:
         self._token = _ACTIVE_BUDGET_SCOPE.set(self.scope)
         return self.scope
 
-    def __exit__(self, exc_type, exc, tb) -> bool:
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> Literal[False]:
         if self._token is not None:
             _ACTIVE_BUDGET_SCOPE.reset(self._token)
         return False
@@ -47,12 +51,12 @@ class BudgetContext:
     async def __aenter__(self) -> BudgetScope:
         return self.__enter__()
 
-    async def __aexit__(self, exc_type, exc, tb) -> bool:
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> Literal[False]:
         return self.__exit__(exc_type, exc, tb)
 
 
 def budget(
-    limit: float,
+    limit: AmountLike,
     *,
     counterparty: str | None = None,
     purpose_prefix: str | None = None,

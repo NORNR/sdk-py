@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping
 
 from .auth import DEFAULT_BASE_URL, load_login
@@ -10,15 +11,55 @@ from .breakers import CircuitBreakerConfig, LocalCircuitBreaker
 from .context import merge_business_context
 from .intent import IntentCheckRecord
 from .models import (
+    AnomalyRecord,
+    ApiKeyRecord,
+    ApiKeyTemplateRecord,
+    AuditExportRecord,
+    ApprovalChainRecord,
     ApprovalRecord,
     AuditReviewRecord,
     BalanceRecord,
+    BudgetCapRecord,
+    ComplianceRecord,
+    CostReportRecord,
     DecisionRecord,
+    EcosystemDirectoryRecord,
+    EventRecord,
     FinancePacketRecord,
+    HardwareBindingRecord,
+    IdentityRecord,
+    InteropValidationRecord,
+    KillSwitchRecord,
+    LedgerEntryRecord,
+    MonthlyStatementRecord,
+    PolicyPackApplyRecord,
+    PolicyPackCatalogRecord,
+    PolicyPackDetailRecord,
+    PolicyPackReplayResultRecord,
+    PolicyPackRollbackRecord,
+    PolicyTemplateRecord,
+    PolicyWorkbenchRecord,
     PolicySimulationRecord,
+    ReceiptRecord,
+    ReconciliationRecord,
+    ReputationRecord,
+    SettlementJobRecord,
+    SettlementRunRecord,
+    SignedArtifactRecord,
+    TaxProfileRecord,
     TimelineReportRecord,
+    TrustTierRecord,
+    TrustManifestRecord,
+    TrustProfileRecord,
+    WalletStateRecord,
+    WebhookDeliveryRecord,
+    WebhookDrainRecord,
+    WebhookRecord,
+    WeeklyExpenseReportRecord,
     WeeklyReviewRecord,
+    AgreementStandardRecord,
 )
+from .money import AmountLike, usd_decimal, usd_float, usd_text
 from .replay import merge_replay_context
 from .transport import AsyncHttpTransport, SyncHttpTransport, TransportConfig
 
@@ -76,6 +117,17 @@ class _RequestOptions:
     body: Any = None
     authenticated: bool = True
     parse_json: bool = True
+
+
+def _items_payload(payload: Any, *keys: str) -> list[Any]:
+    if isinstance(payload, Mapping):
+        for key in ("items", *keys):
+            items = payload.get(key)
+            if isinstance(items, list):
+                return list(items)
+    if isinstance(payload, list):
+        return list(payload)
+    return []
 
 
 def _coerce_error(status_code: int, payload: Any, fallback: str) -> AgentPayError:
@@ -143,15 +195,18 @@ class AgentPayClient:
         self.transport = transport or SyncHttpTransport(
             TransportConfig(timeout_seconds=timeout_seconds, default_headers=dict(self.default_headers)),
         )
+        self._owns_transport = transport is None
 
     def with_api_key(self, api_key: str) -> "AgentPayClient":
-        return AgentPayClient(
+        cloned = AgentPayClient(
             base_url=self.base_url,
             api_key=api_key,
             timeout_seconds=self.timeout_seconds,
             default_headers=self.default_headers,
             transport=self.transport,
         )
+        cloned._owns_transport = False
+        return cloned
 
     def with_timeout(self, timeout_seconds: float) -> "AgentPayClient":
         return AgentPayClient(
@@ -160,6 +215,16 @@ class AgentPayClient:
             timeout_seconds=timeout_seconds,
             default_headers=self.default_headers,
         )
+
+    def close(self) -> None:
+        if self._owns_transport:
+            self.transport.close()
+
+    def __enter__(self) -> "AgentPayClient":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self.close()
 
     def onboard(self, payload: dict[str, Any]) -> Any:
         return self._request("/api/onboarding", _RequestOptions(method="POST", body=payload, authenticated=False))
@@ -173,32 +238,38 @@ class AgentPayClient:
     def create_policy(self, agent_id: str, payload: dict[str, Any]) -> Any:
         return self._request(f"/api/agents/{agent_id}/policies", _RequestOptions(method="POST", body=payload))
 
-    def list_policy_templates(self) -> Any:
-        return self._request("/api/policy-templates")
+    def list_policy_templates(self) -> list[PolicyTemplateRecord]:
+        return [PolicyTemplateRecord.from_payload(item) for item in _items_payload(self._request("/api/policy-templates"), "templates")]
 
-    def list_policy_packs(self) -> Any:
-        return self._request("/api/policy-packs")
+    def list_policy_packs(self) -> PolicyPackCatalogRecord:
+        return PolicyPackCatalogRecord.from_payload(self._request("/api/policy-packs"))
 
-    def get_policy_pack(self, pack_id: str) -> Any:
-        return self._request(f"/api/policy-packs/{pack_id}")
+    def get_policy_pack(self, pack_id: str) -> PolicyPackDetailRecord:
+        return PolicyPackDetailRecord.from_payload(self._request(f"/api/policy-packs/{pack_id}"))
 
-    def replay_policy_pack(self, pack_id: str, payload: dict[str, Any]) -> Any:
-        return self._request(f"/api/policy-packs/{pack_id}/replay", _RequestOptions(method="POST", body=payload))
+    def replay_policy_pack(self, pack_id: str, payload: dict[str, Any]) -> PolicyPackReplayResultRecord:
+        return PolicyPackReplayResultRecord.from_payload(
+            self._request(f"/api/policy-packs/{pack_id}/replay", _RequestOptions(method="POST", body=payload))
+        )
 
-    def apply_policy_pack(self, pack_id: str, payload: dict[str, Any]) -> Any:
-        return self._request(f"/api/policy-packs/{pack_id}/apply", _RequestOptions(method="POST", body=payload))
+    def apply_policy_pack(self, pack_id: str, payload: dict[str, Any]) -> PolicyPackApplyRecord:
+        return PolicyPackApplyRecord.from_payload(
+            self._request(f"/api/policy-packs/{pack_id}/apply", _RequestOptions(method="POST", body=payload))
+        )
 
-    def rollback_policy_pack(self, pack_id: str, payload: dict[str, Any] | None = None) -> Any:
-        return self._request(f"/api/policy-packs/{pack_id}/rollback", _RequestOptions(method="POST", body=payload or {}))
+    def rollback_policy_pack(self, pack_id: str, payload: dict[str, Any] | None = None) -> PolicyPackRollbackRecord:
+        return PolicyPackRollbackRecord.from_payload(
+            self._request(f"/api/policy-packs/{pack_id}/rollback", _RequestOptions(method="POST", body=payload or {}))
+        )
 
-    def list_api_key_templates(self) -> Any:
-        return self._request("/api/api-key-templates")
+    def list_api_key_templates(self) -> list[ApiKeyTemplateRecord]:
+        return [ApiKeyTemplateRecord.from_payload(item) for item in _items_payload(self._request("/api/api-key-templates"), "templates")]
 
-    def list_budget_caps(self) -> Any:
-        return self._request("/api/budget-caps")
+    def list_budget_caps(self) -> list[BudgetCapRecord]:
+        return [BudgetCapRecord.from_payload(item) for item in _items_payload(self._request("/api/budget-caps"))]
 
-    def create_budget_cap(self, payload: dict[str, Any]) -> Any:
-        return self._request("/api/budget-caps", _RequestOptions(method="POST", body=payload))
+    def create_budget_cap(self, payload: dict[str, Any]) -> BudgetCapRecord:
+        return BudgetCapRecord.from_payload(self._request("/api/budget-caps", _RequestOptions(method="POST", body=payload)))
 
     def simulate_policy(self, payload: dict[str, Any]) -> Any:
         return self._request("/api/policies/simulate", _RequestOptions(method="POST", body=payload))
@@ -206,38 +277,82 @@ class AgentPayClient:
     def diff_policy(self, payload: dict[str, Any]) -> Any:
         return self._request("/api/policies/diff", _RequestOptions(method="POST", body=payload))
 
-    def list_anomalies(self) -> Any:
-        return self._request("/api/anomalies")
+    def list_anomalies(self) -> list[AnomalyRecord]:
+        return [AnomalyRecord.from_payload(item) for item in _items_payload(self._request("/api/anomalies"))]
 
-    def update_anomaly(self, anomaly_id: str, payload: dict[str, Any]) -> Any:
-        return self._request(f"/api/anomalies/{anomaly_id}", _RequestOptions(method="POST", body=payload))
+    def update_anomaly(self, anomaly_id: str, payload: dict[str, Any]) -> AnomalyRecord:
+        return AnomalyRecord.from_payload(self._request(f"/api/anomalies/{anomaly_id}", _RequestOptions(method="POST", body=payload)))
 
     def create_payment_intent(self, payload: dict[str, Any]) -> Any:
         return self._request("/api/payments/intents", _RequestOptions(method="POST", body=payload))
 
-    def get_identity(self) -> Any:
-        return self._request("/api/identity")
+    def get_identity(self) -> IdentityRecord:
+        return IdentityRecord.from_payload(self._request("/api/identity"))
 
-    def update_identity(self, payload: dict[str, Any]) -> Any:
-        return self._request("/api/identity", _RequestOptions(method="POST", body=payload))
+    def update_identity(self, payload: dict[str, Any]) -> IdentityRecord:
+        return IdentityRecord.from_payload(self._request("/api/identity", _RequestOptions(method="POST", body=payload)))
 
-    def get_compliance(self) -> Any:
-        return self._request("/api/compliance")
+    def get_compliance(self) -> ComplianceRecord:
+        return ComplianceRecord.from_payload(self._request("/api/compliance"))
 
-    def get_reputation(self) -> Any:
-        return self._request("/api/reputation")
+    def list_kill_switches(self) -> list[KillSwitchRecord]:
+        raw = self._request("/api/compliance/kill-switches")
+        items = raw.get("items") if isinstance(raw, Mapping) else raw
+        return [KillSwitchRecord.from_payload(item) for item in items or []]
 
-    def get_trust_profile(self) -> Any:
-        return self._request("/api/trust/profile")
+    def save_kill_switch(self, payload: dict[str, Any]) -> KillSwitchRecord:
+        return KillSwitchRecord.from_payload(
+            self._request("/api/compliance/kill-switches", _RequestOptions(method="POST", body=payload))
+        )
 
-    def get_trust_tiers(self) -> Any:
-        return self._request("/api/trust/tiers")
+    def list_approval_chains(self) -> list[ApprovalChainRecord]:
+        raw = self._request("/api/compliance/approval-chains")
+        items = raw.get("items") if isinstance(raw, Mapping) else raw
+        return [ApprovalChainRecord.from_payload(item) for item in items or []]
 
-    def get_trust_manifest(self) -> Any:
-        return self._request("/api/trust/manifest")
+    def save_approval_chain(self, payload: dict[str, Any]) -> ApprovalChainRecord:
+        return ApprovalChainRecord.from_payload(
+            self._request("/api/compliance/approval-chains", _RequestOptions(method="POST", body=payload))
+        )
 
-    def get_signed_trust_manifest(self) -> Any:
-        return self._request("/api/trust/manifest/signed")
+    def list_hardware_bindings(self) -> list[HardwareBindingRecord]:
+        raw = self._request("/api/compliance/hardware-bindings")
+        items = raw.get("items") if isinstance(raw, Mapping) else raw
+        return [HardwareBindingRecord.from_payload(item) for item in items or []]
+
+    def save_hardware_binding(self, payload: dict[str, Any]) -> HardwareBindingRecord:
+        return HardwareBindingRecord.from_payload(
+            self._request("/api/compliance/hardware-bindings", _RequestOptions(method="POST", body=payload))
+        )
+
+    def get_tax_profile(self) -> TaxProfileRecord:
+        return TaxProfileRecord.from_payload(self._request("/api/compliance/tax-profile"))
+
+    def update_tax_profile(self, payload: dict[str, Any]) -> TaxProfileRecord:
+        return TaxProfileRecord.from_payload(
+            self._request("/api/compliance/tax-profile", _RequestOptions(method="POST", body=payload))
+        )
+
+    def update_compliance_settings(self, payload: dict[str, Any]) -> ComplianceRecord:
+        return ComplianceRecord.from_payload(self._request("/api/compliance/settings", _RequestOptions(method="POST", body=payload)))
+
+    def get_weekly_expense_report(self) -> WeeklyExpenseReportRecord:
+        return WeeklyExpenseReportRecord.from_payload(self._request("/api/workspace/expense-report"))
+
+    def get_reputation(self) -> ReputationRecord:
+        return ReputationRecord.from_payload(self._request("/api/reputation"))
+
+    def get_trust_profile(self) -> TrustProfileRecord:
+        return TrustProfileRecord.from_payload(self._request("/api/trust/profile"))
+
+    def get_trust_tiers(self) -> list[TrustTierRecord]:
+        return [TrustTierRecord.from_payload(item) for item in _items_payload(self._request("/api/trust/tiers"), "tiers")]
+
+    def get_trust_manifest(self) -> TrustManifestRecord:
+        return TrustManifestRecord.from_payload(self._request("/api/trust/manifest"))
+
+    def get_signed_trust_manifest(self) -> SignedArtifactRecord:
+        return SignedArtifactRecord.from_payload(self._request("/api/trust/manifest/signed"))
 
     def verify_trust_manifest(self, payload: dict[str, Any]) -> Any:
         return self._request("/api/trust/verify", _RequestOptions(method="POST", body=payload))
@@ -245,66 +360,73 @@ class AgentPayClient:
     def handshake_trust_manifest(self, payload: dict[str, Any]) -> Any:
         return self._request("/api/trust/handshake", _RequestOptions(method="POST", body=payload))
 
-    def get_portable_reputation(self) -> Any:
-        return self._request("/api/reputation/portable")
+    def get_portable_reputation(self) -> ReputationRecord:
+        return ReputationRecord.from_payload(self._request("/api/reputation/portable"))
 
-    def get_signed_portable_reputation(self) -> Any:
-        return self._request("/api/reputation/portable/signed")
+    def get_signed_portable_reputation(self) -> SignedArtifactRecord:
+        return SignedArtifactRecord.from_payload(self._request("/api/reputation/portable/signed"))
 
-    def export_agreement_standard(self) -> Any:
-        return self._request("/api/standards/agreements")
+    def export_agreement_standard(self) -> AgreementStandardRecord:
+        return AgreementStandardRecord.from_payload(self._request("/api/standards/agreements"))
 
-    def export_signed_agreement_standard(self) -> Any:
-        return self._request("/api/standards/agreements/signed")
+    def export_signed_agreement_standard(self) -> SignedArtifactRecord:
+        return SignedArtifactRecord.from_payload(self._request("/api/standards/agreements/signed"))
 
-    def get_agreement_standard_schema(self) -> Any:
-        return self._request("/api/standards/agreement-schema")
+    def get_agreement_standard_schema(self) -> AgreementStandardRecord:
+        return AgreementStandardRecord.from_payload(self._request("/api/standards/agreement-schema"))
 
-    def get_ecosystem_directory(self) -> Any:
-        return self._request("/api/ecosystem/directory")
+    def get_ecosystem_directory(self) -> EcosystemDirectoryRecord:
+        return EcosystemDirectoryRecord.from_payload(self._request("/api/ecosystem/directory"))
 
-    def get_signed_ecosystem_directory(self) -> Any:
-        return self._request("/api/ecosystem/directory/signed")
+    def get_signed_ecosystem_directory(self) -> SignedArtifactRecord:
+        return SignedArtifactRecord.from_payload(self._request("/api/ecosystem/directory/signed"))
 
-    def validate_interop_envelope(self, payload: dict[str, Any]) -> Any:
-        return self._request("/api/interop/validate", _RequestOptions(method="POST", body=payload))
-
-    def list_events(self) -> Any:
-        return self._request("/api/events")
-
-    def list_webhooks(self) -> Any:
-        return self._request("/api/webhooks")
-
-    def create_webhook(self, payload: dict[str, Any]) -> Any:
-        return self._request("/api/webhooks", _RequestOptions(method="POST", body=payload))
-
-    def list_webhook_deliveries(self) -> Any:
-        return self._request("/api/webhooks/deliveries")
-
-    def drain_webhooks(self) -> Any:
-        return self._request("/api/webhooks/drain", _RequestOptions(method="POST"))
-
-    def test_webhook(self, endpoint_id: str, payload: dict[str, Any] | None = None) -> Any:
-        return self._request(
-            f"/api/webhooks/{endpoint_id}/test",
-            _RequestOptions(method="POST", body=payload or {"drainNow": True}),
+    def validate_interop_envelope(self, payload: dict[str, Any]) -> InteropValidationRecord:
+        return InteropValidationRecord.from_payload(
+            self._request("/api/interop/validate", _RequestOptions(method="POST", body=payload))
         )
 
-    def replay_webhook(self, endpoint_id: str, payload: dict[str, Any]) -> Any:
-        return self._request(f"/api/webhooks/{endpoint_id}/replay", _RequestOptions(method="POST", body=payload))
+    def list_events(self) -> list[EventRecord]:
+        return [EventRecord.from_payload(item) for item in _items_payload(self._request("/api/events"))]
 
-    def export_audit(self) -> Any:
-        return self._request("/api/audit/export")
+    def list_webhooks(self) -> list[WebhookRecord]:
+        return [WebhookRecord.from_payload(item) for item in _items_payload(self._request("/api/webhooks"), "endpoints")]
+
+    def create_webhook(self, payload: dict[str, Any]) -> WebhookRecord:
+        return WebhookRecord.from_payload(self._request("/api/webhooks", _RequestOptions(method="POST", body=payload)))
+
+    def list_webhook_deliveries(self) -> list[WebhookDeliveryRecord]:
+        return [WebhookDeliveryRecord.from_payload(item) for item in _items_payload(self._request("/api/webhooks/deliveries"))]
+
+    def drain_webhooks(self) -> WebhookDrainRecord:
+        return WebhookDrainRecord.from_payload(self._request("/api/webhooks/drain", _RequestOptions(method="POST")))
+
+    def test_webhook(self, endpoint_id: str, payload: dict[str, Any] | None = None) -> WebhookDeliveryRecord:
+        return WebhookDeliveryRecord.from_payload(self._request(
+            f"/api/webhooks/{endpoint_id}/test",
+            _RequestOptions(method="POST", body=payload or {"drainNow": True}),
+        ))
+
+    def replay_webhook(self, endpoint_id: str, payload: dict[str, Any]) -> WebhookDeliveryRecord:
+        return WebhookDeliveryRecord.from_payload(
+            self._request(f"/api/webhooks/{endpoint_id}/replay", _RequestOptions(method="POST", body=payload))
+        )
+
+    def export_audit(self) -> AuditExportRecord:
+        return AuditExportRecord.from_payload(self._request("/api/audit/export"))
 
     def get_audit_review(self, fmt: str = "json") -> Any:
         return self._request(f"/api/audit/review?format={fmt}", _RequestOptions(parse_json=fmt == "json"))
 
-    def get_cost_report(self, fmt: str = "json") -> Any:
-        return self._request(f"/api/reporting/costs?format={fmt}", _RequestOptions(parse_json=fmt == "json"))
+    def get_cost_report(self, fmt: str = "json") -> CostReportRecord | str:
+        payload = self._request(f"/api/reporting/costs?format={fmt}", _RequestOptions(parse_json=fmt == "json"))
+        if fmt != "json":
+            return payload
+        return CostReportRecord.from_payload(payload)
 
-    def get_monthly_statement(self, month: str | None = None) -> Any:
+    def get_monthly_statement(self, month: str | None = None) -> MonthlyStatementRecord:
         suffix = f"?month={month}" if month else ""
-        return self._request(f"/api/statements/monthly{suffix}")
+        return MonthlyStatementRecord.from_payload(self._request(f"/api/statements/monthly{suffix}"))
 
     def list_agreements(self) -> Any:
         return self._request("/api/agreements")
@@ -336,8 +458,8 @@ class AgentPayClient:
             _RequestOptions(method="POST", body=payload),
         )
 
-    def get_wallet(self) -> Any:
-        return self._request("/api/wallet")
+    def get_wallet(self) -> WalletStateRecord:
+        return WalletStateRecord.from_payload(self._request("/api/wallet"))
 
     def create_deposit(self, payload: dict[str, Any]) -> Any:
         return self._request("/api/wallet/deposits", _RequestOptions(method="POST", body=payload))
@@ -345,23 +467,23 @@ class AgentPayClient:
     def create_payout(self, payload: dict[str, Any]) -> Any:
         return self._request("/api/wallet/payouts", _RequestOptions(method="POST", body=payload))
 
-    def list_settlement_jobs(self) -> Any:
-        return self._request("/api/settlement/jobs")
+    def list_settlement_jobs(self) -> list[SettlementJobRecord]:
+        return [SettlementJobRecord.from_payload(item) for item in _items_payload(self._request("/api/settlement/jobs"), "jobs")]
 
-    def run_settlement(self) -> Any:
-        return self._request("/api/settlement/run", _RequestOptions(method="POST"))
+    def run_settlement(self) -> SettlementRunRecord:
+        return SettlementRunRecord.from_payload(self._request("/api/settlement/run", _RequestOptions(method="POST")))
 
-    def get_reconciliation(self) -> Any:
-        return self._request("/api/reconciliation")
+    def get_reconciliation(self) -> ReconciliationRecord:
+        return ReconciliationRecord.from_payload(self._request("/api/reconciliation"))
 
-    def get_intent_timeline(self) -> Any:
-        return self._request("/api/workspace/intent-timeline")
+    def get_intent_timeline(self) -> TimelineReportRecord:
+        return TimelineReportRecord.from_payload(self._request("/api/workspace/intent-timeline"))
 
-    def get_weekly_review(self) -> Any:
-        return self._request("/api/workspace/weekly-review")
+    def get_weekly_review(self) -> WeeklyReviewRecord:
+        return WeeklyReviewRecord.from_payload(self._request("/api/workspace/weekly-review"))
 
-    def get_policy_workbench(self) -> Any:
-        return self._request("/api/policy-workbench")
+    def get_policy_workbench(self) -> PolicyWorkbenchRecord:
+        return PolicyWorkbenchRecord.from_payload(self._request("/api/policy-workbench"))
 
     def approve_intent(self, approval_id: str, payload: dict[str, Any] | None = None) -> Any:
         return self._request(f"/api/approvals/{approval_id}/approve", _RequestOptions(method="POST", body=payload or {}))
@@ -369,30 +491,36 @@ class AgentPayClient:
     def reject_intent(self, approval_id: str, payload: dict[str, Any] | None = None) -> Any:
         return self._request(f"/api/approvals/{approval_id}/reject", _RequestOptions(method="POST", body=payload or {}))
 
-    def list_approvals(self) -> Any:
-        return self._request("/api/approvals")
+    def list_approvals(self) -> list[ApprovalRecord]:
+        return [record for record in (ApprovalRecord.from_payload(item) for item in _items_payload(self._request("/api/approvals"))) if record]
 
-    def list_ledger(self, agent_id: str) -> Any:
-        return self._request(f"/api/agents/{agent_id}/ledger")
+    def list_ledger(self, agent_id: str) -> list[LedgerEntryRecord]:
+        return [LedgerEntryRecord.from_payload(item) for item in _items_payload(self._request(f"/api/agents/{agent_id}/ledger"), "entries")]
 
-    def list_receipts(self, agent_id: str) -> Any:
-        return self._request(f"/api/agents/{agent_id}/receipts")
+    def list_receipts(self, agent_id: str) -> list[ReceiptRecord]:
+        return [ReceiptRecord.from_payload(item) for item in _items_payload(self._request(f"/api/agents/{agent_id}/receipts"))]
 
-    def attach_receipt_evidence(self, receipt_id: str, payload: dict[str, Any]) -> Any:
-        return self._request(f"/api/receipts/{receipt_id}/evidence", _RequestOptions(method="POST", body=payload))
+    def attach_receipt_evidence(self, receipt_id: str, payload: dict[str, Any]) -> ReceiptRecord:
+        return ReceiptRecord.from_payload(
+            self._request(f"/api/receipts/{receipt_id}/evidence", _RequestOptions(method="POST", body=payload))
+        )
 
-    def list_api_keys(self) -> Any:
-        return self._request("/api/api-keys")
+    def list_api_keys(self) -> list[ApiKeyRecord]:
+        return [ApiKeyRecord.from_payload(item) for item in _items_payload(self._request("/api/api-keys"))]
 
-    def create_api_key(self, payload: str | dict[str, Any]) -> Any:
+    def create_api_key(self, payload: str | dict[str, Any]) -> ApiKeyRecord:
         body = {"label": payload} if isinstance(payload, str) else payload
-        return self._request("/api/api-keys", _RequestOptions(method="POST", body=body))
+        return ApiKeyRecord.from_payload(self._request("/api/api-keys", _RequestOptions(method="POST", body=body)))
 
-    def revoke_api_key(self, api_key_id: str, payload: dict[str, Any] | None = None) -> Any:
-        return self._request(f"/api/api-keys/{api_key_id}/revoke", _RequestOptions(method="POST", body=payload or {}))
+    def revoke_api_key(self, api_key_id: str, payload: dict[str, Any] | None = None) -> ApiKeyRecord:
+        return ApiKeyRecord.from_payload(
+            self._request(f"/api/api-keys/{api_key_id}/revoke", _RequestOptions(method="POST", body=payload or {}))
+        )
 
-    def rotate_api_key(self, api_key_id: str, payload: dict[str, Any] | None = None) -> Any:
-        return self._request(f"/api/api-keys/{api_key_id}/rotate", _RequestOptions(method="POST", body=payload or {}))
+    def rotate_api_key(self, api_key_id: str, payload: dict[str, Any] | None = None) -> ApiKeyRecord:
+        return ApiKeyRecord.from_payload(
+            self._request(f"/api/api-keys/{api_key_id}/rotate", _RequestOptions(method="POST", body=payload or {}))
+        )
 
     def _request(self, pathname: str, options: _RequestOptions = _RequestOptions()) -> Any:
         headers: dict[str, str] = {}
@@ -434,15 +562,36 @@ class AsyncAgentPayClient:
         self.transport = transport or AsyncHttpTransport(
             TransportConfig(timeout_seconds=timeout_seconds, default_headers=dict(self.default_headers)),
         )
+        self._owns_transport = transport is None
 
     def with_api_key(self, api_key: str) -> "AsyncAgentPayClient":
-        return AsyncAgentPayClient(
+        cloned = AsyncAgentPayClient(
             base_url=self.base_url,
             api_key=api_key,
             timeout_seconds=self.timeout_seconds,
             default_headers=self.default_headers,
             transport=self.transport,
         )
+        cloned._owns_transport = False
+        return cloned
+
+    def with_timeout(self, timeout_seconds: float) -> "AsyncAgentPayClient":
+        return AsyncAgentPayClient(
+            base_url=self.base_url,
+            api_key=self.api_key,
+            timeout_seconds=timeout_seconds,
+            default_headers=self.default_headers,
+        )
+
+    async def close(self) -> None:
+        if self._owns_transport:
+            await self.transport.close()
+
+    async def __aenter__(self) -> "AsyncAgentPayClient":
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        await self.close()
 
     async def onboard(self, payload: dict[str, Any]) -> Any:
         return await self._request("/api/onboarding", _RequestOptions(method="POST", body=payload, authenticated=False))
@@ -450,35 +599,88 @@ class AsyncAgentPayClient:
     async def get_bootstrap(self) -> Any:
         return await self._request("/api/bootstrap")
 
-    async def list_policy_templates(self) -> Any:
-        return await self._request("/api/policy-templates")
+    async def create_agent(self, payload: dict[str, Any]) -> Any:
+        return await self._request("/api/agents", _RequestOptions(method="POST", body=payload))
 
-    async def list_policy_packs(self) -> Any:
-        return await self._request("/api/policy-packs")
+    async def create_policy(self, agent_id: str, payload: dict[str, Any]) -> Any:
+        return await self._request(f"/api/agents/{agent_id}/policies", _RequestOptions(method="POST", body=payload))
 
-    async def get_policy_pack(self, pack_id: str) -> Any:
-        return await self._request(f"/api/policy-packs/{pack_id}")
+    async def list_policy_templates(self) -> list[PolicyTemplateRecord]:
+        return [PolicyTemplateRecord.from_payload(item) for item in _items_payload(await self._request("/api/policy-templates"), "templates")]
 
-    async def replay_policy_pack(self, pack_id: str, payload: dict[str, Any]) -> Any:
-        return await self._request(f"/api/policy-packs/{pack_id}/replay", _RequestOptions(method="POST", body=payload))
+    async def list_api_key_templates(self) -> list[ApiKeyTemplateRecord]:
+        return [ApiKeyTemplateRecord.from_payload(item) for item in _items_payload(await self._request("/api/api-key-templates"), "templates")]
 
-    async def apply_policy_pack(self, pack_id: str, payload: dict[str, Any]) -> Any:
-        return await self._request(f"/api/policy-packs/{pack_id}/apply", _RequestOptions(method="POST", body=payload))
+    async def list_budget_caps(self) -> list[BudgetCapRecord]:
+        return [BudgetCapRecord.from_payload(item) for item in _items_payload(await self._request("/api/budget-caps"))]
 
-    async def rollback_policy_pack(self, pack_id: str, payload: dict[str, Any] | None = None) -> Any:
-        return await self._request(f"/api/policy-packs/{pack_id}/rollback", _RequestOptions(method="POST", body=payload or {}))
+    async def create_budget_cap(self, payload: dict[str, Any]) -> BudgetCapRecord:
+        return BudgetCapRecord.from_payload(await self._request("/api/budget-caps", _RequestOptions(method="POST", body=payload)))
+
+    async def list_policy_packs(self) -> PolicyPackCatalogRecord:
+        return PolicyPackCatalogRecord.from_payload(await self._request("/api/policy-packs"))
+
+    async def get_policy_pack(self, pack_id: str) -> PolicyPackDetailRecord:
+        return PolicyPackDetailRecord.from_payload(await self._request(f"/api/policy-packs/{pack_id}"))
+
+    async def replay_policy_pack(self, pack_id: str, payload: dict[str, Any]) -> PolicyPackReplayResultRecord:
+        return PolicyPackReplayResultRecord.from_payload(
+            await self._request(f"/api/policy-packs/{pack_id}/replay", _RequestOptions(method="POST", body=payload))
+        )
+
+    async def apply_policy_pack(self, pack_id: str, payload: dict[str, Any]) -> PolicyPackApplyRecord:
+        return PolicyPackApplyRecord.from_payload(
+            await self._request(f"/api/policy-packs/{pack_id}/apply", _RequestOptions(method="POST", body=payload))
+        )
+
+    async def rollback_policy_pack(self, pack_id: str, payload: dict[str, Any] | None = None) -> PolicyPackRollbackRecord:
+        return PolicyPackRollbackRecord.from_payload(
+            await self._request(f"/api/policy-packs/{pack_id}/rollback", _RequestOptions(method="POST", body=payload or {}))
+        )
 
     async def create_payment_intent(self, payload: dict[str, Any]) -> Any:
         return await self._request("/api/payments/intents", _RequestOptions(method="POST", body=payload))
 
-    async def get_wallet(self) -> Any:
-        return await self._request("/api/wallet")
+    async def diff_policy(self, payload: dict[str, Any]) -> Any:
+        return await self._request("/api/policies/diff", _RequestOptions(method="POST", body=payload))
 
-    async def run_settlement(self) -> Any:
-        return await self._request("/api/settlement/run", _RequestOptions(method="POST"))
+    async def list_anomalies(self) -> list[AnomalyRecord]:
+        return [AnomalyRecord.from_payload(item) for item in _items_payload(await self._request("/api/anomalies"))]
 
-    async def list_approvals(self) -> Any:
-        return await self._request("/api/approvals")
+    async def update_anomaly(self, anomaly_id: str, payload: dict[str, Any]) -> AnomalyRecord:
+        return AnomalyRecord.from_payload(
+            await self._request(f"/api/anomalies/{anomaly_id}", _RequestOptions(method="POST", body=payload))
+        )
+
+    async def get_identity(self) -> IdentityRecord:
+        return IdentityRecord.from_payload(await self._request("/api/identity"))
+
+    async def update_identity(self, payload: dict[str, Any]) -> IdentityRecord:
+        return IdentityRecord.from_payload(await self._request("/api/identity", _RequestOptions(method="POST", body=payload)))
+
+    async def get_compliance(self) -> ComplianceRecord:
+        return ComplianceRecord.from_payload(await self._request("/api/compliance"))
+
+    async def get_wallet(self) -> WalletStateRecord:
+        return WalletStateRecord.from_payload(await self._request("/api/wallet"))
+
+    async def create_deposit(self, payload: dict[str, Any]) -> Any:
+        return await self._request("/api/wallet/deposits", _RequestOptions(method="POST", body=payload))
+
+    async def create_payout(self, payload: dict[str, Any]) -> Any:
+        return await self._request("/api/wallet/payouts", _RequestOptions(method="POST", body=payload))
+
+    async def list_settlement_jobs(self) -> list[SettlementJobRecord]:
+        return [SettlementJobRecord.from_payload(item) for item in _items_payload(await self._request("/api/settlement/jobs"), "jobs")]
+
+    async def run_settlement(self) -> SettlementRunRecord:
+        return SettlementRunRecord.from_payload(await self._request("/api/settlement/run", _RequestOptions(method="POST")))
+
+    async def get_reconciliation(self) -> ReconciliationRecord:
+        return ReconciliationRecord.from_payload(await self._request("/api/reconciliation"))
+
+    async def list_approvals(self) -> list[ApprovalRecord]:
+        return [record for record in (ApprovalRecord.from_payload(item) for item in _items_payload(await self._request("/api/approvals"))) if record]
 
     async def approve_intent(self, approval_id: str, payload: dict[str, Any] | None = None) -> Any:
         return await self._request(f"/api/approvals/{approval_id}/approve", _RequestOptions(method="POST", body=payload or {}))
@@ -486,23 +688,67 @@ class AsyncAgentPayClient:
     async def reject_intent(self, approval_id: str, payload: dict[str, Any] | None = None) -> Any:
         return await self._request(f"/api/approvals/{approval_id}/reject", _RequestOptions(method="POST", body=payload or {}))
 
+    async def list_ledger(self, agent_id: str) -> list[LedgerEntryRecord]:
+        return [LedgerEntryRecord.from_payload(item) for item in _items_payload(await self._request(f"/api/agents/{agent_id}/ledger"), "entries")]
+
+    async def list_receipts(self, agent_id: str) -> list[ReceiptRecord]:
+        return [ReceiptRecord.from_payload(item) for item in _items_payload(await self._request(f"/api/agents/{agent_id}/receipts"))]
+
+    async def attach_receipt_evidence(self, receipt_id: str, payload: dict[str, Any]) -> ReceiptRecord:
+        return ReceiptRecord.from_payload(
+            await self._request(f"/api/receipts/{receipt_id}/evidence", _RequestOptions(method="POST", body=payload))
+        )
+
+    async def list_api_keys(self) -> list[ApiKeyRecord]:
+        return [ApiKeyRecord.from_payload(item) for item in _items_payload(await self._request("/api/api-keys"))]
+
+    async def create_api_key(self, payload: str | dict[str, Any]) -> ApiKeyRecord:
+        body = {"label": payload} if isinstance(payload, str) else payload
+        return ApiKeyRecord.from_payload(await self._request("/api/api-keys", _RequestOptions(method="POST", body=body)))
+
+    async def revoke_api_key(self, api_key_id: str, payload: dict[str, Any] | None = None) -> ApiKeyRecord:
+        return ApiKeyRecord.from_payload(
+            await self._request(f"/api/api-keys/{api_key_id}/revoke", _RequestOptions(method="POST", body=payload or {}))
+        )
+
+    async def rotate_api_key(self, api_key_id: str, payload: dict[str, Any] | None = None) -> ApiKeyRecord:
+        return ApiKeyRecord.from_payload(
+            await self._request(f"/api/api-keys/{api_key_id}/rotate", _RequestOptions(method="POST", body=payload or {}))
+        )
+
     async def simulate_policy(self, payload: dict[str, Any]) -> Any:
         return await self._request("/api/policies/simulate", _RequestOptions(method="POST", body=payload))
 
-    async def get_audit_review(self) -> Any:
-        return await self._request("/api/audit/review")
+    async def export_audit(self) -> AuditExportRecord:
+        return AuditExportRecord.from_payload(await self._request("/api/audit/export"))
 
-    async def get_trust_profile(self) -> Any:
-        return await self._request("/api/trust/profile")
+    async def get_audit_review(self, fmt: str = "json") -> Any:
+        return await self._request(f"/api/audit/review?format={fmt}", _RequestOptions(parse_json=fmt == "json"))
 
-    async def get_trust_tiers(self) -> Any:
-        return await self._request("/api/trust/tiers")
+    async def get_cost_report(self, fmt: str = "json") -> CostReportRecord | str:
+        payload = await self._request(f"/api/reporting/costs?format={fmt}", _RequestOptions(parse_json=fmt == "json"))
+        if fmt != "json":
+            return payload
+        return CostReportRecord.from_payload(payload)
 
-    async def get_trust_manifest(self) -> Any:
-        return await self._request("/api/trust/manifest")
+    async def get_monthly_statement(self, month: str | None = None) -> MonthlyStatementRecord:
+        suffix = f"?month={month}" if month else ""
+        return MonthlyStatementRecord.from_payload(await self._request(f"/api/statements/monthly{suffix}"))
 
-    async def get_signed_trust_manifest(self) -> Any:
-        return await self._request("/api/trust/manifest/signed")
+    async def get_reputation(self) -> ReputationRecord:
+        return ReputationRecord.from_payload(await self._request("/api/reputation"))
+
+    async def get_trust_profile(self) -> TrustProfileRecord:
+        return TrustProfileRecord.from_payload(await self._request("/api/trust/profile"))
+
+    async def get_trust_tiers(self) -> list[TrustTierRecord]:
+        return [TrustTierRecord.from_payload(item) for item in _items_payload(await self._request("/api/trust/tiers"), "tiers")]
+
+    async def get_trust_manifest(self) -> TrustManifestRecord:
+        return TrustManifestRecord.from_payload(await self._request("/api/trust/manifest"))
+
+    async def get_signed_trust_manifest(self) -> SignedArtifactRecord:
+        return SignedArtifactRecord.from_payload(await self._request("/api/trust/manifest/signed"))
 
     async def verify_trust_manifest(self, payload: dict[str, Any]) -> Any:
         return await self._request("/api/trust/verify", _RequestOptions(method="POST", body=payload))
@@ -510,11 +756,140 @@ class AsyncAgentPayClient:
     async def handshake_trust_manifest(self, payload: dict[str, Any]) -> Any:
         return await self._request("/api/trust/handshake", _RequestOptions(method="POST", body=payload))
 
-    async def get_intent_timeline(self) -> Any:
-        return await self._request("/api/workspace/intent-timeline")
+    async def get_portable_reputation(self) -> ReputationRecord:
+        return ReputationRecord.from_payload(await self._request("/api/reputation/portable"))
 
-    async def get_weekly_review(self) -> Any:
-        return await self._request("/api/workspace/weekly-review")
+    async def get_signed_portable_reputation(self) -> SignedArtifactRecord:
+        return SignedArtifactRecord.from_payload(await self._request("/api/reputation/portable/signed"))
+
+    async def export_agreement_standard(self) -> AgreementStandardRecord:
+        return AgreementStandardRecord.from_payload(await self._request("/api/standards/agreements"))
+
+    async def export_signed_agreement_standard(self) -> SignedArtifactRecord:
+        return SignedArtifactRecord.from_payload(await self._request("/api/standards/agreements/signed"))
+
+    async def get_agreement_standard_schema(self) -> AgreementStandardRecord:
+        return AgreementStandardRecord.from_payload(await self._request("/api/standards/agreement-schema"))
+
+    async def get_ecosystem_directory(self) -> EcosystemDirectoryRecord:
+        return EcosystemDirectoryRecord.from_payload(await self._request("/api/ecosystem/directory"))
+
+    async def get_signed_ecosystem_directory(self) -> SignedArtifactRecord:
+        return SignedArtifactRecord.from_payload(await self._request("/api/ecosystem/directory/signed"))
+
+    async def validate_interop_envelope(self, payload: dict[str, Any]) -> InteropValidationRecord:
+        return InteropValidationRecord.from_payload(
+            await self._request("/api/interop/validate", _RequestOptions(method="POST", body=payload))
+        )
+
+    async def list_events(self) -> list[EventRecord]:
+        return [EventRecord.from_payload(item) for item in _items_payload(await self._request("/api/events"))]
+
+    async def list_webhooks(self) -> list[WebhookRecord]:
+        return [WebhookRecord.from_payload(item) for item in _items_payload(await self._request("/api/webhooks"), "endpoints")]
+
+    async def create_webhook(self, payload: dict[str, Any]) -> WebhookRecord:
+        return WebhookRecord.from_payload(await self._request("/api/webhooks", _RequestOptions(method="POST", body=payload)))
+
+    async def list_webhook_deliveries(self) -> list[WebhookDeliveryRecord]:
+        return [WebhookDeliveryRecord.from_payload(item) for item in _items_payload(await self._request("/api/webhooks/deliveries"))]
+
+    async def drain_webhooks(self) -> WebhookDrainRecord:
+        return WebhookDrainRecord.from_payload(await self._request("/api/webhooks/drain", _RequestOptions(method="POST")))
+
+    async def test_webhook(self, endpoint_id: str, payload: dict[str, Any] | None = None) -> WebhookDeliveryRecord:
+        return WebhookDeliveryRecord.from_payload(await self._request(
+            f"/api/webhooks/{endpoint_id}/test",
+            _RequestOptions(method="POST", body=payload or {"drainNow": True}),
+        ))
+
+    async def replay_webhook(self, endpoint_id: str, payload: dict[str, Any]) -> WebhookDeliveryRecord:
+        return WebhookDeliveryRecord.from_payload(
+            await self._request(f"/api/webhooks/{endpoint_id}/replay", _RequestOptions(method="POST", body=payload))
+        )
+
+    async def get_intent_timeline(self) -> TimelineReportRecord:
+        return TimelineReportRecord.from_payload(await self._request("/api/workspace/intent-timeline"))
+
+    async def get_weekly_review(self) -> WeeklyReviewRecord:
+        return WeeklyReviewRecord.from_payload(await self._request("/api/workspace/weekly-review"))
+
+    async def get_policy_workbench(self) -> PolicyWorkbenchRecord:
+        return PolicyWorkbenchRecord.from_payload(await self._request("/api/policy-workbench"))
+
+    async def list_agreements(self) -> Any:
+        return await self._request("/api/agreements")
+
+    async def create_agreement(self, payload: dict[str, Any]) -> Any:
+        return await self._request("/api/agreements", _RequestOptions(method="POST", body=payload))
+
+    async def submit_milestone_proof(self, agreement_id: str, milestone_id: str, payload: dict[str, Any]) -> Any:
+        return await self._request(
+            f"/api/agreements/{agreement_id}/milestones/{milestone_id}/proof",
+            _RequestOptions(method="POST", body=payload),
+        )
+
+    async def release_milestone(self, agreement_id: str, milestone_id: str) -> Any:
+        return await self._request(
+            f"/api/agreements/{agreement_id}/milestones/{milestone_id}/release",
+            _RequestOptions(method="POST"),
+        )
+
+    async def dispute_milestone(self, agreement_id: str, milestone_id: str, payload: dict[str, Any]) -> Any:
+        return await self._request(
+            f"/api/agreements/{agreement_id}/milestones/{milestone_id}/dispute",
+            _RequestOptions(method="POST", body=payload),
+        )
+
+    async def resolve_milestone(self, agreement_id: str, milestone_id: str, payload: dict[str, Any]) -> Any:
+        return await self._request(
+            f"/api/agreements/{agreement_id}/milestones/{milestone_id}/resolve",
+            _RequestOptions(method="POST", body=payload),
+        )
+
+    async def list_kill_switches(self) -> list[KillSwitchRecord]:
+        raw = await self._request("/api/compliance/kill-switches")
+        items = raw.get("items") if isinstance(raw, Mapping) else raw
+        return [KillSwitchRecord.from_payload(item) for item in items or []]
+
+    async def save_kill_switch(self, payload: dict[str, Any]) -> KillSwitchRecord:
+        return KillSwitchRecord.from_payload(
+            await self._request("/api/compliance/kill-switches", _RequestOptions(method="POST", body=payload))
+        )
+
+    async def list_approval_chains(self) -> list[ApprovalChainRecord]:
+        raw = await self._request("/api/compliance/approval-chains")
+        items = raw.get("items") if isinstance(raw, Mapping) else raw
+        return [ApprovalChainRecord.from_payload(item) for item in items or []]
+
+    async def save_approval_chain(self, payload: dict[str, Any]) -> ApprovalChainRecord:
+        return ApprovalChainRecord.from_payload(
+            await self._request("/api/compliance/approval-chains", _RequestOptions(method="POST", body=payload))
+        )
+
+    async def list_hardware_bindings(self) -> list[HardwareBindingRecord]:
+        raw = await self._request("/api/compliance/hardware-bindings")
+        items = raw.get("items") if isinstance(raw, Mapping) else raw
+        return [HardwareBindingRecord.from_payload(item) for item in items or []]
+
+    async def save_hardware_binding(self, payload: dict[str, Any]) -> HardwareBindingRecord:
+        return HardwareBindingRecord.from_payload(
+            await self._request("/api/compliance/hardware-bindings", _RequestOptions(method="POST", body=payload))
+        )
+
+    async def get_tax_profile(self) -> TaxProfileRecord:
+        return TaxProfileRecord.from_payload(await self._request("/api/compliance/tax-profile"))
+
+    async def update_tax_profile(self, payload: dict[str, Any]) -> TaxProfileRecord:
+        return TaxProfileRecord.from_payload(
+            await self._request("/api/compliance/tax-profile", _RequestOptions(method="POST", body=payload))
+        )
+
+    async def update_compliance_settings(self, payload: dict[str, Any]) -> Any:
+        return await self._request("/api/compliance/settings", _RequestOptions(method="POST", body=payload))
+
+    async def get_weekly_expense_report(self) -> WeeklyExpenseReportRecord:
+        return WeeklyExpenseReportRecord.from_payload(await self._request("/api/workspace/expense-report"))
 
     async def _request(self, pathname: str, options: _RequestOptions = _RequestOptions()) -> Any:
         headers: dict[str, str] = {}
@@ -559,7 +934,7 @@ class Wallet:
     client: AgentPayClient
     workspace: dict[str, Any]
     agent: dict[str, Any]
-    wallet: dict[str, Any] | None
+    wallet: Mapping[str, Any] | None
     api_key: dict[str, Any] | None
     policy: dict[str, Any] | None = None
     circuit_breaker: LocalCircuitBreaker | None = None
@@ -569,15 +944,15 @@ class Wallet:
         cls,
         *,
         owner: str,
-        daily_limit: float = 100,
+        daily_limit: AmountLike = 100,
         base_url: str = DEFAULT_BASE_URL,
         workspace_name: str | None = None,
-        require_approval_above: float | None = None,
-        max_transaction: float | None = None,
+        require_approval_above: AmountLike | None = None,
+        max_transaction: AmountLike | None = None,
         whitelist: list[str] | None = None,
         auto_pause_on_anomaly: bool = False,
         review_on_anomaly: bool = False,
-        starting_balance: float = 100,
+        starting_balance: AmountLike = 100,
         timeout_seconds: float = 15.0,
         transport: SyncHttpTransport | None = None,
     ) -> "Wallet":
@@ -586,13 +961,13 @@ class Wallet:
             {
                 "workspaceName": workspace_name or f"{owner} workspace",
                 "agentName": owner,
-                "dailyLimitUsd": daily_limit,
-                "requireApprovalOverUsd": require_approval_above,
-                "maxTransactionUsd": max_transaction,
+                "dailyLimitUsd": usd_float(daily_limit),
+                "requireApprovalOverUsd": usd_float(require_approval_above) if require_approval_above is not None else None,
+                "maxTransactionUsd": usd_float(max_transaction) if max_transaction is not None else None,
                 "counterpartyAllowlist": whitelist,
                 "autoPauseOnAnomaly": auto_pause_on_anomaly,
                 "reviewOnAnomaly": review_on_anomaly,
-                "startingBalanceUsd": starting_balance,
+                "startingBalanceUsd": usd_float(starting_balance),
             }
         )
         client = public_client.with_api_key(onboarding["apiKey"]["key"])
@@ -612,12 +987,13 @@ class Wallet:
         api_key: str | None = None,
         base_url: str = DEFAULT_BASE_URL,
         agent_id: str | None = None,
+        auth_path: str | Path | None = None,
         timeout_seconds: float = 15.0,
         transport: SyncHttpTransport | None = None,
     ) -> "Wallet":
         resolved_api_key = api_key
         if not resolved_api_key:
-            profile = load_login(base_url=base_url)
+            profile = load_login(base_url=base_url, path=Path(auth_path) if auth_path else None)
             if not profile:
                 raise AuthenticationError("Missing api_key and no stored NORNR login found. Run `nornr login`.")
             resolved_api_key = profile.api_key
@@ -640,6 +1016,15 @@ class Wallet:
     def workspace_id(self) -> str:
         return self.workspace["id"]
 
+    def close(self) -> None:
+        self.client.close()
+
+    def __enter__(self) -> "Wallet":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self.close()
+
     def refresh(self) -> dict[str, Any]:
         bootstrap = self.client.get_bootstrap()
         self.workspace = bootstrap["workspace"]
@@ -650,7 +1035,7 @@ class Wallet:
     def pay(
         self,
         *,
-        amount: float,
+        amount: AmountLike,
         to: str,
         purpose: str | None = None,
         counterparty: str | None = None,
@@ -659,14 +1044,15 @@ class Wallet:
         business_context: dict[str, Any] | None = None,
         replay_context: dict[str, Any] | None = None,
     ) -> DecisionRecord:
+        normalized_amount = usd_decimal(amount)
         scoped_budget = current_budget_scope()
-        if scoped_budget and amount > scoped_budget.limit_usd:
+        if scoped_budget and normalized_amount > scoped_budget.limit_usd:
             raise ValidationError(
-                f"Local NORNR budget scope blocked {amount:.2f} USD because the block limit is {scoped_budget.limit_usd:.2f} USD",
+                f"Local NORNR budget scope blocked {usd_text(normalized_amount)} USD because the block limit is {usd_text(scoped_budget.limit_usd)} USD",
             )
         if self.circuit_breaker:
             try:
-                self.circuit_breaker.check(amount)
+                self.circuit_breaker.check(normalized_amount)
             except RuntimeError as exc:
                 raise ValidationError(str(exc)) from exc
         destination = to if _looks_like_evm_address(to) else None
@@ -686,7 +1072,7 @@ class Wallet:
         result = self.client.create_payment_intent(
             {
                 "agentId": self.agent_id,
-                "amountUsd": amount,
+                "amountUsd": usd_float(normalized_amount),
                 "counterparty": resolved_counterparty,
                 "destination": destination,
                 "budgetTags": merged_budget_tags or None,
@@ -725,8 +1111,11 @@ class Wallet:
         status = payment_intent.get("status") if isinstance(payment_intent, Mapping) else None
         if status != "queued":
             return payment
+        payment_intent_id = payment_intent.get("id") if isinstance(payment_intent, Mapping) else None
+        if not payment_intent_id:
+            raise AgentPayError("Queued payment is missing payment intent id")
         bootstrap = self.client.get_bootstrap()
-        pending_approval = _find_pending_approval(bootstrap, payment_intent["id"])
+        pending_approval = _find_pending_approval(bootstrap, str(payment_intent_id))
         if not pending_approval:
             raise AgentPayError("No pending approval found for payment intent")
         return self.client.approve_intent(pending_approval["id"], {"comment": comment} if comment else {})
@@ -739,12 +1128,12 @@ class Wallet:
         self.wallet = wallet_state
         return BalanceRecord.from_payload(wallet_state)
 
-    def settle(self) -> dict[str, Any]:
+    def settle(self) -> SettlementRunRecord:
         return self.client.run_settlement()
 
     def budget(
         self,
-        limit: float,
+        limit: AmountLike,
         *,
         counterparty: str | None = None,
         purpose_prefix: str | None = None,
@@ -764,8 +1153,8 @@ class Wallet:
         *,
         max_requests: int = 10,
         window_seconds: float = 1.0,
-        max_spend_usd: float | None = None,
-        max_velocity_usd: float | None = None,
+        max_spend_usd: AmountLike | None = None,
+        max_velocity_usd: AmountLike | None = None,
     ) -> "Wallet":
         self.circuit_breaker = LocalCircuitBreaker(
             CircuitBreakerConfig(
@@ -780,7 +1169,7 @@ class Wallet:
     def guard(
         self,
         *,
-        amount: float,
+        amount: AmountLike,
         counterparty: str,
         purpose: str,
         destination: str | None = None,
@@ -790,7 +1179,7 @@ class Wallet:
 
         return WalletGuard(
             self,
-            amount=amount,
+            amount=usd_float(amount),
             counterparty=counterparty,
             purpose=purpose,
             destination=destination,
@@ -805,13 +1194,13 @@ class Wallet:
         }
         return PolicySimulationRecord.from_payload(self.client.simulate_policy(payload))
 
-    def list_policy_packs(self) -> Any:
+    def list_policy_packs(self) -> PolicyPackCatalogRecord:
         return self.client.list_policy_packs()
 
-    def get_policy_pack(self, pack_id: str) -> Any:
+    def get_policy_pack(self, pack_id: str) -> PolicyPackDetailRecord:
         return self.client.get_policy_pack(pack_id)
 
-    def replay_policy_pack(self, pack_id: str, *, mode: str = "shadow") -> Any:
+    def replay_policy_pack(self, pack_id: str, *, mode: str = "shadow") -> PolicyPackReplayResultRecord:
         return self.client.replay_policy_pack(
             pack_id,
             {
@@ -820,7 +1209,7 @@ class Wallet:
             },
         )
 
-    def apply_policy_pack(self, pack_id: str, *, mode: str = "shadow") -> Any:
+    def apply_policy_pack(self, pack_id: str, *, mode: str = "shadow") -> PolicyPackApplyRecord:
         return self.client.apply_policy_pack(
             pack_id,
             {
@@ -829,7 +1218,7 @@ class Wallet:
             },
         )
 
-    def rollback_policy_pack(self, pack_id: str) -> Any:
+    def rollback_policy_pack(self, pack_id: str) -> PolicyPackRollbackRecord:
         return self.client.rollback_policy_pack(
             pack_id,
             {
@@ -853,13 +1242,14 @@ class Wallet:
         self,
         *,
         intent: str,
-        cost: float,
+        cost: AmountLike,
         counterparty: str,
         budget_tags: dict[str, str] | None = None,
         business_context: dict[str, Any] | None = None,
     ) -> IntentCheckRecord:
+        normalized_cost = usd_decimal(cost)
         decision = self.pay(
-            amount=cost,
+            amount=normalized_cost,
             to=counterparty,
             counterparty=counterparty,
             purpose=intent,
@@ -867,7 +1257,7 @@ class Wallet:
             dry_run=True,
             business_context=business_context or {"reason": intent},
         )
-        return IntentCheckRecord.from_decision(decision, intent=intent, amount=cost)
+        return IntentCheckRecord.from_decision(decision, intent=intent, amount=usd_float(normalized_cost))
 
 
 @dataclass
@@ -875,7 +1265,7 @@ class AsyncWallet:
     client: AsyncAgentPayClient
     workspace: dict[str, Any]
     agent: dict[str, Any]
-    wallet: dict[str, Any] | None
+    wallet: Mapping[str, Any] | None
     api_key: dict[str, Any] | None
     policy: dict[str, Any] | None = None
     circuit_breaker: LocalCircuitBreaker | None = None
@@ -885,15 +1275,15 @@ class AsyncWallet:
         cls,
         *,
         owner: str,
-        daily_limit: float = 100,
+        daily_limit: AmountLike = 100,
         base_url: str = DEFAULT_BASE_URL,
         workspace_name: str | None = None,
-        require_approval_above: float | None = None,
-        max_transaction: float | None = None,
+        require_approval_above: AmountLike | None = None,
+        max_transaction: AmountLike | None = None,
         whitelist: list[str] | None = None,
         auto_pause_on_anomaly: bool = False,
         review_on_anomaly: bool = False,
-        starting_balance: float = 100,
+        starting_balance: AmountLike = 100,
         timeout_seconds: float = 15.0,
         transport: AsyncHttpTransport | None = None,
     ) -> "AsyncWallet":
@@ -902,13 +1292,13 @@ class AsyncWallet:
             {
                 "workspaceName": workspace_name or f"{owner} workspace",
                 "agentName": owner,
-                "dailyLimitUsd": daily_limit,
-                "requireApprovalOverUsd": require_approval_above,
-                "maxTransactionUsd": max_transaction,
+                "dailyLimitUsd": usd_float(daily_limit),
+                "requireApprovalOverUsd": usd_float(require_approval_above) if require_approval_above is not None else None,
+                "maxTransactionUsd": usd_float(max_transaction) if max_transaction is not None else None,
                 "counterpartyAllowlist": whitelist,
                 "autoPauseOnAnomaly": auto_pause_on_anomaly,
                 "reviewOnAnomaly": review_on_anomaly,
-                "startingBalanceUsd": starting_balance,
+                "startingBalanceUsd": usd_float(starting_balance),
             }
         )
         client = public_client.with_api_key(onboarding["apiKey"]["key"])
@@ -928,12 +1318,13 @@ class AsyncWallet:
         api_key: str | None = None,
         base_url: str = DEFAULT_BASE_URL,
         agent_id: str | None = None,
+        auth_path: str | Path | None = None,
         timeout_seconds: float = 15.0,
         transport: AsyncHttpTransport | None = None,
     ) -> "AsyncWallet":
         resolved_api_key = api_key
         if not resolved_api_key:
-            profile = load_login(base_url=base_url)
+            profile = load_login(base_url=base_url, path=Path(auth_path) if auth_path else None)
             if not profile:
                 raise AuthenticationError("Missing api_key and no stored NORNR login found. Run `nornr login`.")
             resolved_api_key = profile.api_key
@@ -952,6 +1343,19 @@ class AsyncWallet:
     def agent_id(self) -> str:
         return self.agent["id"]
 
+    @property
+    def workspace_id(self) -> str:
+        return self.workspace["id"]
+
+    async def close(self) -> None:
+        await self.client.close()
+
+    async def __aenter__(self) -> "AsyncWallet":
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        await self.close()
+
     async def refresh(self) -> dict[str, Any]:
         bootstrap = await self.client.get_bootstrap()
         self.workspace = bootstrap["workspace"]
@@ -962,7 +1366,7 @@ class AsyncWallet:
     async def pay(
         self,
         *,
-        amount: float,
+        amount: AmountLike,
         to: str,
         purpose: str | None = None,
         counterparty: str | None = None,
@@ -971,14 +1375,15 @@ class AsyncWallet:
         business_context: dict[str, Any] | None = None,
         replay_context: dict[str, Any] | None = None,
     ) -> DecisionRecord:
+        normalized_amount = usd_decimal(amount)
         scoped_budget = current_budget_scope()
-        if scoped_budget and amount > scoped_budget.limit_usd:
+        if scoped_budget and normalized_amount > scoped_budget.limit_usd:
             raise ValidationError(
-                f"Local NORNR budget scope blocked {amount:.2f} USD because the block limit is {scoped_budget.limit_usd:.2f} USD",
+                f"Local NORNR budget scope blocked {usd_text(normalized_amount)} USD because the block limit is {usd_text(scoped_budget.limit_usd)} USD",
             )
         if self.circuit_breaker:
             try:
-                self.circuit_breaker.check(amount)
+                self.circuit_breaker.check(normalized_amount)
             except RuntimeError as exc:
                 raise ValidationError(str(exc)) from exc
         destination = to if _looks_like_evm_address(to) else None
@@ -998,7 +1403,7 @@ class AsyncWallet:
         result = await self.client.create_payment_intent(
             {
                 "agentId": self.agent_id,
-                "amountUsd": amount,
+                "amountUsd": usd_float(normalized_amount),
                 "counterparty": resolved_counterparty,
                 "destination": destination,
                 "budgetTags": merged_budget_tags or None,
@@ -1037,23 +1442,29 @@ class AsyncWallet:
         status = payment_intent.get("status") if isinstance(payment_intent, Mapping) else None
         if status != "queued":
             return payment
+        payment_intent_id = payment_intent.get("id") if isinstance(payment_intent, Mapping) else None
+        if not payment_intent_id:
+            raise AgentPayError("Queued payment is missing payment intent id")
         bootstrap = await self.client.get_bootstrap()
-        pending_approval = _find_pending_approval(bootstrap, payment_intent["id"])
+        pending_approval = _find_pending_approval(bootstrap, str(payment_intent_id))
         if not pending_approval:
             raise AgentPayError("No pending approval found for payment intent")
         return await self.client.approve_intent(pending_approval["id"], {"comment": comment} if comment else {})
+
+    async def reject(self, approval_id: str, *, comment: str | None = None) -> Any:
+        return await self.client.reject_intent(approval_id, {"comment": comment} if comment else {})
 
     async def balance(self) -> BalanceRecord:
         wallet_state = await self.client.get_wallet()
         self.wallet = wallet_state
         return BalanceRecord.from_payload(wallet_state)
 
-    async def settle(self) -> dict[str, Any]:
+    async def settle(self) -> SettlementRunRecord:
         return await self.client.run_settlement()
 
     def budget(
         self,
-        limit: float,
+        limit: AmountLike,
         *,
         counterparty: str | None = None,
         purpose_prefix: str | None = None,
@@ -1073,8 +1484,8 @@ class AsyncWallet:
         *,
         max_requests: int = 10,
         window_seconds: float = 1.0,
-        max_spend_usd: float | None = None,
-        max_velocity_usd: float | None = None,
+        max_spend_usd: AmountLike | None = None,
+        max_velocity_usd: AmountLike | None = None,
     ) -> "AsyncWallet":
         self.circuit_breaker = LocalCircuitBreaker(
             CircuitBreakerConfig(
@@ -1089,7 +1500,7 @@ class AsyncWallet:
     def guard(
         self,
         *,
-        amount: float,
+        amount: AmountLike,
         counterparty: str,
         purpose: str,
         destination: str | None = None,
@@ -1099,7 +1510,7 @@ class AsyncWallet:
 
         return AsyncWalletGuard(
             self,
-            amount=amount,
+            amount=usd_float(amount),
             counterparty=counterparty,
             purpose=purpose,
             destination=destination,
@@ -1117,13 +1528,13 @@ class AsyncWallet:
             )
         )
 
-    async def list_policy_packs(self) -> Any:
+    async def list_policy_packs(self) -> PolicyPackCatalogRecord:
         return await self.client.list_policy_packs()
 
-    async def get_policy_pack(self, pack_id: str) -> Any:
+    async def get_policy_pack(self, pack_id: str) -> PolicyPackDetailRecord:
         return await self.client.get_policy_pack(pack_id)
 
-    async def replay_policy_pack(self, pack_id: str, *, mode: str = "shadow") -> Any:
+    async def replay_policy_pack(self, pack_id: str, *, mode: str = "shadow") -> PolicyPackReplayResultRecord:
         return await self.client.replay_policy_pack(
             pack_id,
             {
@@ -1132,7 +1543,7 @@ class AsyncWallet:
             },
         )
 
-    async def apply_policy_pack(self, pack_id: str, *, mode: str = "shadow") -> Any:
+    async def apply_policy_pack(self, pack_id: str, *, mode: str = "shadow") -> PolicyPackApplyRecord:
         return await self.client.apply_policy_pack(
             pack_id,
             {
@@ -1141,7 +1552,7 @@ class AsyncWallet:
             },
         )
 
-    async def rollback_policy_pack(self, pack_id: str) -> Any:
+    async def rollback_policy_pack(self, pack_id: str) -> PolicyPackRollbackRecord:
         return await self.client.rollback_policy_pack(
             pack_id,
             {
@@ -1165,13 +1576,14 @@ class AsyncWallet:
         self,
         *,
         intent: str,
-        cost: float,
+        cost: AmountLike,
         counterparty: str,
         budget_tags: dict[str, str] | None = None,
         business_context: dict[str, Any] | None = None,
     ) -> IntentCheckRecord:
+        normalized_cost = usd_decimal(cost)
         decision = await self.pay(
-            amount=cost,
+            amount=normalized_cost,
             to=counterparty,
             counterparty=counterparty,
             purpose=intent,
@@ -1179,7 +1591,7 @@ class AsyncWallet:
             dry_run=True,
             business_context=business_context or {"reason": intent},
         )
-        return IntentCheckRecord.from_decision(decision, intent=intent, amount=cost)
+        return IntentCheckRecord.from_decision(decision, intent=intent, amount=usd_float(normalized_cost))
 
 
 NornrClient = AgentPayClient

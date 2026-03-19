@@ -81,6 +81,10 @@ Minimal copy-pasteable examples live under [`examples/`](./examples):
 - [`01_basic_guard.py`](./examples/01_basic_guard.py)
 - [`02_async_wallet.py`](./examples/02_async_wallet.py)
 - [`03_pydantic_ai_agent.py`](./examples/03_pydantic_ai_agent.py)
+- [`08_framework_kits.py`](./examples/08_framework_kits.py)
+- [`09_monthly_close.py`](./examples/09_monthly_close.py)
+- [`10_weekly_finance_handoff.py`](./examples/10_weekly_finance_handoff.py)
+- [`13_openclaw_governance.py`](./examples/13_openclaw_governance.py)
 
 ## License
 
@@ -174,6 +178,85 @@ Useful high-level methods:
 - `wallet.finance_packet()`
 - `wallet.timeline()`
 - `wallet.weekly_review()`
+
+## Productized kits
+
+The SDK now ships opinionated kits for the highest-signal operator outcomes.
+
+```python
+from agentpay import NornrWallet, create_framework_kits
+
+wallet = NornrWallet.connect(api_key="replace-with-nornr-api-key", base_url="https://nornr.com")
+
+for kit in create_framework_kits(wallet):
+    print(kit.to_summary_dict())
+```
+
+The currently productized kits are:
+
+- `create_openai_agents_kit(wallet)`
+- `create_pydanticai_kit(wallet, business_context=...)`
+- `create_langgraph_kit(wallet)`
+- `create_browser_agent_kit(wallet, blocked_domains=[...])`
+- `create_mcp_kit(wallet)`
+
+Each kit bundles the right helpers plus a recommended official governance pack.
+
+## Hosted finance workflows
+
+Finance-close and weekly-handoff helpers now sit above the raw accounting bridge so teams can ship finance workflows, not just payload transforms.
+
+```python
+from agentpay import NornrWallet, run_monthly_close
+
+wallet = NornrWallet.connect(api_key="replace-with-nornr-api-key", base_url="https://nornr.com")
+report = run_monthly_close(wallet, provider="fortnox", workspace_label="NORNR finance close")
+print(report.to_summary_dict())
+```
+
+Useful helpers:
+
+- `build_finance_close_bundle(...)`
+- `run_weekly_finance_handoff(...)`
+- `run_monthly_close(...)`
+
+## OpenClaw / ClawHub
+
+OpenClaw is a distribution surface, not NORNR's product identity.
+The fit is simple: put policy before paid actions, require approval for risky autonomous actions, and keep a finance-ready audit trail after execution.
+
+```python
+from agentpay import NornrWallet, OpenClawGovernanceAdapter
+
+wallet = NornrWallet.connect(
+    api_key="replace-with-nornr-api-key",
+    base_url="https://nornr.com",
+    agent_id="replace-with-agent-id",
+)
+adapter = OpenClawGovernanceAdapter(wallet)
+
+result = adapter.preflight_paid_action(
+    action="purchase",
+    amount_usd=25,
+    counterparty="openai",
+    purpose="Run the paid OpenClaw research action",
+)
+
+print(result.to_dict())
+```
+
+The minimal official skill bundle lives in [`integrations/openclaw/nornr-governance`](../../integrations/openclaw/nornr-governance).
+
+Useful OpenClaw review surfaces:
+
+- `adapter.pending_approvals()`
+- `adapter.approve(payment_intent_id, comment=...)`
+- `adapter.reject(payment_intent_id, comment=...)`
+- `adapter.anomalies(counterparty=...)`
+- `adapter.intent_timeline()`
+- `adapter.review_bundle(counterparty=...)`
+- `adapter.audit_export()`
+- `adapter.monthly_close(provider="quickbooks")`
 
 ## Actionable approval errors
 
@@ -392,6 +475,50 @@ If a proof bundle fails the mandate check, NORNR blocks release until the operat
 
 Use `client.get_trust_profile()` when you want the workspace-level trust posture and counterparty signals in one payload.
 
+## A2A escrow handshake
+
+Use the higher-level A2A helper when both sides of an agent service need to attest before escrow is released:
+
+```python
+from agentpay import A2AEscrow, AgentAttestation, NornrClient
+
+client = NornrClient(base_url="https://nornr.com", api_key="...")
+escrow = A2AEscrow(client)
+
+handshake = escrow.create_three_way_handshake(
+    buyer_agent_id="manager-agent",
+    worker_agent_id="research-worker",
+    worker_destination="0xresearchworker",
+    title="Research brief delivery",
+    milestone_title="Submit signed executive brief",
+    amount_usd=25,
+)
+
+outcome = escrow.settle_handshake(
+    agreement_id=handshake.agreement_id,
+    milestone_id=handshake.milestone_id,
+    worker=AgentAttestation(
+        agent_id="research-worker",
+        role="worker",
+        summary="Uploaded the signed brief package",
+        artifact_hash="sha256:brief-bundle-v1",
+    ),
+    buyer=AgentAttestation(
+        agent_id="manager-agent",
+        role="buyer",
+        summary="Reviewed and accepted the brief",
+        status="accepted",
+        artifact_hash="sha256:brief-bundle-v1",
+    ),
+    artifact_hash="sha256:brief-bundle-v1",
+    summary="Dual attestation completed for milestone delivery.",
+)
+
+print(outcome.settlement_action)
+```
+
+This keeps NORNR in the handshake: create the agreement, attach both attestations, then either release or dispute from the same governed surface.
+
 ## NORNR Verified trust manifests
 
 Use the trust manifest helpers when you want a machine-readable verification layer for a workspace:
@@ -419,6 +546,29 @@ handshake = client.handshake_trust_manifest(
 print(handshake["decision"])
 print(handshake["reasons"])
 ```
+
+## Agent resume / verified profile
+
+Use the resume generator when you want a public-ready summary of a workspace or agent lane:
+
+```python
+from agentpay import AgentResumeGenerator, NornrWallet
+
+wallet = NornrWallet.connect(api_key="...", agent_id="research-worker")
+resume = AgentResumeGenerator(wallet).build()
+
+print(resume.public_profile_url)
+print(resume.to_dict())
+```
+
+This pulls the signed trust manifest, trust profile and ecosystem directory into one portable summary:
+
+- verification label and tier
+- trust score
+- verified proof / dispute / refund rates
+- completed agreement count
+- inferred capabilities
+- public NORNR Verified profile URL
 
 ## Policy replay
 
@@ -469,6 +619,144 @@ Current official packs focus on:
 - vendor / procurement workflows
 - browser ops
 - finance review lanes
+- customer support spend
+- local MCP tools
+- finance close / export-heavy workflows
+
+## MCP server surface
+
+If you want NORNR to plug into MCP-native agent tooling, expose the wallet as a small stdio tool server:
+
+```python
+from agentpay import NornrWallet, create_mcp_server
+
+wallet = NornrWallet.connect(api_key="replace-with-nornr-api-key", base_url="https://nornr.com")
+server = create_mcp_server(wallet)
+
+print(server.list_tools())
+```
+
+The built-in tool set includes:
+
+- `nornr.check_spend`
+- `nornr.request_spend`
+- `nornr.pending_approvals`
+- `nornr.balance`
+- `nornr.finance_packet`
+
+This is a good fit when you want NORNR to sit underneath Claude Desktop, Cursor, or another MCP-speaking local agent without teaching each app NORNR from scratch.
+
+The CLI serves the tools over MCP-style stdio using `Content-Length` framing, so local MCP clients can talk to it directly:
+
+```bash
+export NORNR_API_KEY=replace-with-nornr-api-key
+export NORNR_AGENT_ID=agent_123
+nornr mcp manifest
+nornr mcp claude-config
+nornr mcp serve
+```
+
+The recommended official pack for local MCP clients is `mcp-local-tools-guarded`.
+
+## Browser checkout guard
+
+For browser agents, add a purchase-aware guard before the agent clicks a checkout or fills payment details:
+
+```python
+from agentpay import BrowserCheckoutGuard, NornrWallet
+
+wallet = NornrWallet.connect(api_key="replace-with-nornr-api-key", base_url="https://nornr.com")
+guard = BrowserCheckoutGuard(wallet, blocked_domains=["stripe.com", "openai.com"])
+
+decision = guard.guard_click(
+    url="https://platform.openai.com/checkout",
+    selector="button.buy-now",
+    text="Buy now",
+    amount=24.0,
+    purpose="Renew team API credits through a browser agent",
+)
+```
+
+This is intentionally framework-agnostic so you can wire it into Playwright, browser-use, or your own browser controller.
+
+The recommended official pack for browser agents is `browser-ops-guarded`.
+
+For callback-style browser automation:
+
+```python
+result = guard.guard_playwright_click(
+    page,
+    url="https://platform.openai.com/checkout",
+    selector="button.buy-now",
+    text="Buy now",
+    amount=24.0,
+)
+```
+
+## Accounting bridge
+
+NORNR already captures monthly statements, cost reports, finance packet state, and audit review context. The accounting bridge turns that into journal-friendly payloads:
+
+```python
+from agentpay import AccountingBridge, NornrWallet
+
+wallet = NornrWallet.connect(api_key="replace-with-nornr-api-key", base_url="https://nornr.com")
+batch = AccountingBridge(wallet, workspace_label="NORNR growth workspace").build_batch()
+
+print(batch.to_quickbooks_payload())
+```
+
+Portable serializers are included for:
+
+- QuickBooks journal payloads
+- Xero manual journal payloads
+- Fortnox voucher payloads
+
+That makes it easier to build an accounting worker or webhook bridge without re-deriving NORNR activity into finance rows yourself.
+
+If you want a webhook-aware export worker:
+
+```python
+from agentpay import AccountingWorker
+
+worker = AccountingWorker(wallet, workspace_label="NORNR growth workspace")
+result = worker.export(provider="fortnox")
+
+print(result.exported_payload)
+print(result.matched_deliveries)
+```
+
+If you want the workflow layer instead of just the export payload:
+
+```python
+from agentpay import run_weekly_finance_handoff
+
+report = run_weekly_finance_handoff(wallet, provider="xero", workspace_label="NORNR weekly handoff")
+print(report.to_summary_dict())
+```
+
+## VP of Finance controller agent
+
+If you want a controller agent that manages other agents' budget posture, use the meta-governance helper:
+
+```python
+from agentpay import AgentOutcome, NornrWallet, VpOfFinanceController
+
+wallet = NornrWallet.connect(api_key="replace-with-nornr-api-key", base_url="https://nornr.com")
+controller = VpOfFinanceController(wallet)
+
+review = controller.review_workspace(
+    target_agent_id=wallet.agent_id,
+    current_daily_limit=100.0,
+    outcome=AgentOutcome(revenue_usd=900.0, leads=10, tasks_completed=31),
+)
+
+print(review.recommendations[0])
+```
+
+This lets you build a controller lane that raises, tightens, or holds budget caps based on finance packet quality, anomaly pressure, and open operator actions.
+
+The recommended official pack for teams that want cleaner close posture around these decisions is `finance-close-export`.
 
 ## Audit and finance handoff
 
@@ -663,6 +951,10 @@ Strong starting points:
 - [pydanticai_agent.py](/Users/alexanderohlsson/gemin/Projekt/AIAGENTSCRYPTO/examples/python/pydanticai_agent.py)
 - [openai_agents_sdk_wallet.py](/Users/alexanderohlsson/gemin/Projekt/AIAGENTSCRYPTO/examples/python/openai_agents_sdk_wallet.py)
 - [langchain_wallet_tools.py](/Users/alexanderohlsson/gemin/Projekt/AIAGENTSCRYPTO/examples/python/langchain_wallet_tools.py)
+- [mcp_server.py](/Users/alexanderohlsson/gemin/Projekt/AIAGENTSCRYPTO/examples/python/mcp_server.py)
+- [browser_checkout_guard.py](/Users/alexanderohlsson/gemin/Projekt/AIAGENTSCRYPTO/examples/python/browser_checkout_guard.py)
+- [controller_agent.py](/Users/alexanderohlsson/gemin/Projekt/AIAGENTSCRYPTO/examples/python/controller_agent.py)
+- [accounting_bridge.py](/Users/alexanderohlsson/gemin/Projekt/AIAGENTSCRYPTO/examples/python/accounting_bridge.py)
 
 ## CLI helper
 

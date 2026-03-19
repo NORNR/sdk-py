@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Sequence
 import webbrowser
 
 from .auth import DEFAULT_BASE_URL, clear_login, load_login, login_url, save_login
 from .client import AgentPayClient, AuthenticationError
+from .mcp import create_mcp_server
 from .pricing import estimate_cost
+from .client import Wallet
 
 
 def _write_env_file(path: Path, values: dict[str, str]) -> None:
@@ -56,13 +59,48 @@ def build_parser() -> argparse.ArgumentParser:
     rescue.add_argument("--api-key")
     rescue.add_argument("--auth-path")
     rescue.add_argument("--action", choices=["approve", "reject"])
+
+    mcp = subparsers.add_parser("mcp", help="Expose NORNR as an MCP-friendly local tool server")
+    mcp_subparsers = mcp.add_subparsers(dest="mcp_command", required=True)
+
+    mcp_serve = mcp_subparsers.add_parser("serve", help="Run the NORNR MCP stdio server")
+    mcp_serve.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    mcp_serve.add_argument("--api-key")
+    mcp_serve.add_argument("--auth-path")
+    mcp_serve.add_argument("--agent-id")
+    mcp_serve.add_argument("--server-name", default="nornr")
+
+    mcp_manifest = mcp_subparsers.add_parser("manifest", help="Print the NORNR MCP tool manifest")
+    mcp_manifest.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    mcp_manifest.add_argument("--api-key")
+    mcp_manifest.add_argument("--auth-path")
+    mcp_manifest.add_argument("--agent-id")
+    mcp_manifest.add_argument("--server-name", default="nornr")
+
+    mcp_config = mcp_subparsers.add_parser("claude-config", help="Print a Claude Desktop config snippet for the NORNR MCP server")
+    mcp_config.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    mcp_config.add_argument("--api-key")
+    mcp_config.add_argument("--auth-path")
+    mcp_config.add_argument("--agent-id")
+    mcp_config.add_argument("--server-name", default="nornr")
     return parser
+
+
+def _resolve_base_url(base_url: str | None) -> str:
+    env_base_url = os.getenv("NORNR_BASE_URL")
+    if base_url and base_url != DEFAULT_BASE_URL:
+        return base_url
+    return env_base_url or base_url or DEFAULT_BASE_URL
 
 
 def _resolve_api_key(api_key: str | None, base_url: str, auth_path: str | None) -> str:
     if api_key:
         return api_key
-    profile = load_login(base_url=base_url, path=Path(auth_path) if auth_path else None)
+    env_api_key = os.getenv("NORNR_API_KEY")
+    if env_api_key:
+        return env_api_key
+    resolved_auth_path = auth_path or os.getenv("NORNR_AUTH_PATH")
+    profile = load_login(base_url=base_url, path=Path(resolved_auth_path) if resolved_auth_path else None)
     if not profile:
         raise AuthenticationError("Missing NORNR api key. Run `nornr login` first or pass --api-key.")
     return profile.api_key
@@ -70,6 +108,13 @@ def _resolve_api_key(api_key: str | None, base_url: str, auth_path: str | None) 
 
 def _print_json(payload: object) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def _resolve_wallet(api_key: str | None, base_url: str, auth_path: str | None, agent_id: str | None = None) -> Wallet:
+    resolved_base_url = _resolve_base_url(base_url)
+    resolved_key = _resolve_api_key(api_key, resolved_base_url, auth_path)
+    resolved_agent_id = agent_id or os.getenv("NORNR_AGENT_ID")
+    return Wallet.connect(api_key=resolved_key, base_url=resolved_base_url, agent_id=resolved_agent_id)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -121,8 +166,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.command == "debug":
-        api_key = _resolve_api_key(args.api_key, args.base_url, args.auth_path)
-        client = AgentPayClient(base_url=args.base_url, api_key=api_key)
+        resolved_base_url = _resolve_base_url(args.base_url)
+        api_key = _resolve_api_key(args.api_key, resolved_base_url, args.auth_path)
+        client = AgentPayClient(base_url=resolved_base_url, api_key=api_key)
         bootstrap = client.get_bootstrap()
         approvals = bootstrap.get("approvals", []) or []
         approval = next((item for item in approvals if item.get("id") == args.resource_id or item.get("paymentIntentId") == args.resource_id), None)
@@ -138,8 +184,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.command == "rescue":
-        api_key = _resolve_api_key(args.api_key, args.base_url, args.auth_path)
-        client = AgentPayClient(base_url=args.base_url, api_key=api_key)
+        resolved_base_url = _resolve_base_url(args.base_url)
+        api_key = _resolve_api_key(args.api_key, resolved_base_url, args.auth_path)
+        client = AgentPayClient(base_url=resolved_base_url, api_key=api_key)
         action = args.action or input("Action [approve/reject]: ").strip().lower()
         if action == "approve":
             _print_json(client.approve_intent(args.approval_id, {"comment": "Approved from NORNR rescue CLI"}))
@@ -148,6 +195,37 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print_json(client.reject_intent(args.approval_id, {"comment": "Rejected from NORNR rescue CLI"}))
             return 0
         raise SystemExit("Unknown action")
+
+    if args.command == "mcp":
+        if args.mcp_command == "serve":
+            wallet = _resolve_wallet(args.api_key, args.base_url, args.auth_path, getattr(args, "agent_id", None))
+            server = create_mcp_server(wallet, server_name=args.server_name)
+            server.run_stdio()
+            return 0
+        server = create_mcp_server(None, server_name=args.server_name)
+        if args.mcp_command == "manifest":
+            _print_json(server.build_manifest())
+            return 0
+        if args.mcp_command == "claude-config":
+            command_args = ["mcp", "serve", "--server-name", args.server_name]
+            if args.agent_id or os.getenv("NORNR_AGENT_ID"):
+                command_args.extend(["--agent-id", args.agent_id or os.getenv("NORNR_AGENT_ID", "")])
+            if args.auth_path or os.getenv("NORNR_AUTH_PATH"):
+                command_args.extend(["--auth-path", args.auth_path or os.getenv("NORNR_AUTH_PATH", "")])
+            resolved_base_url = _resolve_base_url(args.base_url)
+            env = {
+                "NORNR_BASE_URL": resolved_base_url,
+            }
+            resolved_api_key = args.api_key or os.getenv("NORNR_API_KEY")
+            if resolved_api_key:
+                env["NORNR_API_KEY"] = resolved_api_key
+            _print_json(
+                server.build_claude_desktop_config(
+                    args=command_args,
+                    env=env,
+                )
+            )
+            return 0
 
     parser.error("Unknown command")
     return 1

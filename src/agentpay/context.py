@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
 
 def _normalize_tags(value: Mapping[str, Any] | None) -> dict[str, str] | None:
@@ -71,7 +71,7 @@ class BusinessContextScope:
         self._token = _ACTIVE_BUSINESS_CONTEXT.set(self.context)
         return self.context
 
-    def __exit__(self, exc_type, exc, tb) -> bool:
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> Literal[False]:
         if self._token is not None:
             _ACTIVE_BUSINESS_CONTEXT.reset(self._token)
         return False
@@ -79,7 +79,7 @@ class BusinessContextScope:
     async def __aenter__(self) -> BusinessContext:
         return self.__enter__()
 
-    async def __aexit__(self, exc_type, exc, tb) -> bool:
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> Literal[False]:
         return self.__exit__(exc_type, exc, tb)
 
 
