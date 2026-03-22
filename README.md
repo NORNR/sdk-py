@@ -837,7 +837,29 @@ print(handshake["reasons"])
 
 ## LUKSO root-of-trust adapter
 
-Use the adapter when a LUKSO Universal Profile should act as one authority source, while NORNR still owns mandate, policy decision, counterparty scope and audit export:
+Use the adapter when a LUKSO Universal Profile should act as one authority source, while NORNR still owns mandate, policy decision, counterparty scope and audit export.
+
+The correct reading is:
+
+- LUKSO proves who can hold authority on-chain
+- NORNR decides what clears in business context
+- the adapter binds one external authority surface into the same NORNR trust and audit model used everywhere else
+
+Use it when:
+
+- an agent is born in a LUKSO-native environment
+- a buyer cares about on-chain authority provenance
+- you still need the resulting action to survive into review, proof and audit export outside the identity layer
+
+Do not use it to replace NORNR identity semantics or to make NORNR depend on one ecosystem as its only identity backbone.
+
+The adapter stays intentionally thin:
+
+- input: Universal Profile, Key Manager and controller posture
+- binding: NORNR mandate, policy decision and counterparty scope
+- output: one portable `nornr.lukso-binding.v1` packet around the canonical NORNR trust manifest
+
+Example:
 
 ```python
 from agentpay import LuksoIdentityAdapter, NornrClient
@@ -873,11 +895,15 @@ binding = adapter.build_binding(
 print(binding.to_dict())
 ```
 
-This keeps the split explicit:
+What this means in practice:
 
-- LUKSO proves who can hold authority on-chain
-- NORNR still decides what clears in business context
-- the output is a portable binding packet around the canonical NORNR trust manifest, not a replacement for it
+- on-chain authority can be verified from LUKSO posture
+- off-chain release still runs through NORNR control
+- the output is portable enough to travel with the same manifest and verification posture as the rest of the NORNR stack
+
+Public explainer:
+
+- [NORNR + LUKSO root of trust](https://nornr.com/lukso-root-of-trust)
 
 ## Agent resume / verified profile
 
