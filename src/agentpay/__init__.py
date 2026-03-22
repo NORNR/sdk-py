@@ -72,7 +72,15 @@ from .kits import (
     create_langgraph_kit,
     create_mcp_kit,
     create_openai_agents_kit,
+    create_provider_wrapper_kit,
     create_pydanticai_kit,
+)
+from .lukso import (
+    AsyncLuksoIdentityAdapter,
+    LuksoControllerRecord,
+    LuksoGovernanceBinding,
+    LuksoIdentityAdapter,
+    LuksoIdentityRecord,
 )
 from .langgraph import (
     begin_stateful_action,
@@ -234,7 +242,15 @@ from .workflows import (
     run_monthly_close,
     run_weekly_finance_handoff,
 )
-from .wrappers import wrap, wrap_anthropic_client, wrap_async, wrap_openai_client
+from .wrappers import (
+    create_spend_aware_anthropic_client,
+    create_spend_aware_client,
+    create_spend_aware_openai_client,
+    wrap,
+    wrap_anthropic_client,
+    wrap_async,
+    wrap_openai_client,
+)
 
 __all__ = [
     "adapter_business_context",
@@ -404,6 +420,7 @@ __all__ = [
     "create_openai_agents_kit",
     "create_openai_agents_tools",
     "create_openclaw_adapter",
+    "create_provider_wrapper_kit",
     "create_pydanticai_kit",
     "create_pydanticai_tools",
     "create_pydanticai_tools_for",
@@ -489,6 +506,9 @@ __all__ = [
     "verify_webhook_signature",
     "wallet_dependency",
     "wrap",
+    "create_spend_aware_anthropic_client",
+    "create_spend_aware_client",
+    "create_spend_aware_openai_client",
     "wrap_anthropic_client",
     "wrap_async",
     "wrap_openai_client",

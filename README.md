@@ -4,14 +4,30 @@ Python SDK for [NORNR](https://nornr.com), the control plane for AI agents opera
 
 NORNR sits between agent intent and real-world execution. It evaluates whether an action should happen, routes larger or riskier actions into approval, surfaces anomaly posture before it hardens into normal behavior, and leaves behind a finance-ready audit trail after the action completes.
 
-In practice, the SDK gives you four things in one surface:
+In practice, the SDK helps you prove one governed spend lane at a time:
 
-- `Policy` - define what agents are allowed to do before money moves
-- `Detection` - surface unusual spend, suspicious counterparties, or risky autonomous posture
-- `Control` - route actions through approvals, queues, rejection, and operator review
-- `Accounting` - keep receipt trail, finance packet, and export-ready records attached to the same decision
+- `Governed runtime` for one canonical decision path
+- `Browser checkout governance` for paid or risky browser-side actions
+- `MCP control server` for autonomous tool requests that need policy, review and export
 
-The published package name is `nornr-agentpay`, while the Python import remains `agentpay` and the lower-level client remains `AgentPayClient`. For new Python code, start with `NornrWallet` or `Wallet`.
+Across all three, the same control-plane objects stay intact:
+
+- `policy decision`
+- `approval state`
+- `anomaly posture`
+- `receipt trail`
+- `audit export`
+
+The fastest install path now assumes one lane first:
+
+- `provider-wrapper` for one spend-aware ingress into existing provider code
+- `runtime` for one generic governed action
+- `openai-agents` for one governed tool lane
+- `langgraph` for one approval branch
+- `mcp` for one local tools review lane
+- `browser-guard` for one checkout lane
+
+The published package name is `nornr-agentpay`, while the Python import remains `agentpay` and the lower-level client remains `AgentPayClient`. For new Python code, start with `NornrRuntime` for one governed action or `NornrWallet` when you need the broader client surface.
 
 For a control-plane-first namespace above `Wallet`, use `NornrRuntime`.
 
@@ -56,6 +72,19 @@ Then start with exactly one of these:
 1. `NornrRuntime.execute(...)` for one governed action
 2. `BrowserCheckoutGuard` for browser-side paid actions
 3. `create_mcp_server(...)` for operator review and autonomous-agent control
+
+If you want an installable default instead of a blank file, use `nornr init`:
+
+```bash
+nornr init provider-wrapper --owner runtime-agent
+nornr init runtime --owner runtime-agent
+nornr init openai-agents --owner runtime-agent
+nornr init langgraph --owner graph-agent
+nornr init mcp --owner desktop-agent --mcp-client claude
+nornr init browser-guard --owner browser-agent
+```
+
+That writes a starter env file plus one scaffold for the lane you picked.
 
 From this repo during local development:
 
@@ -422,6 +451,19 @@ print(result.to_dict())
 
 The minimal official skill bundle lives in [`integrations/openclaw/nornr-governance`](../../integrations/openclaw/nornr-governance).
 
+Fastest supporting config path when the same team also runs local MCP clients:
+
+```bash
+nornr mcp claude-config --server-name nornr --agent-id openclaw-agent
+nornr mcp cursor-config --server-name nornr --agent-id openclaw-agent
+```
+
+Default rollout posture:
+
+- `mcp-local-tools-guarded` when OpenClaw actions can trigger consequential local tool execution
+- stop queued actions, inspect the review path, then approve or reject explicitly
+- treat the plugin as the control layer before autonomous execution, not as a generic growth or plugin hack
+
 Useful OpenClaw review surfaces:
 
 - `adapter.pending_approvals()`
@@ -518,7 +560,7 @@ These are the three highest-signal patterns:
 
 - `@nornr_guard(...)` around an async function
 - `with wallet.guard(...)` around a local expensive block
-- `wrap(OpenAI(), wallet, ...)` to secure an existing client in one line
+- `create_spend_aware_openai_client(OpenAI(), wallet, ...)` to secure an existing client in one line
 
 ```python
 from agentpay import NornrWallet, nornr_guard
@@ -558,11 +600,19 @@ Wrap an existing OpenAI- or Anthropic-style client in one line:
 
 ```python
 from openai import OpenAI
-from agentpay import NornrWallet, wrap
+from agentpay import NornrWallet, create_spend_aware_openai_client
 
 wallet = NornrWallet.connect(api_key="replace-with-nornr-api-key", base_url="https://nornr.com")
-client = wrap(OpenAI(), wallet, amount=2.5, counterparty="openai", purpose="chat completion")
+client = create_spend_aware_openai_client(
+    OpenAI(),
+    wallet,
+    max_spend_usd=2.5,
+    purpose="chat completion",
+    model="gpt-5-mini",
+)
 ```
+
+Use the spend-aware wrapper as a thin ingress into existing provider code. Once the lane becomes consequential for ops, finance or review ownership, upgrade it into governed runtime, MCP control server or browser governance instead of leaving it as a permanent budget-cap utility.
 
 ## Dry-run previews and local budget scopes
 
@@ -784,6 +834,50 @@ handshake = client.handshake_trust_manifest(
 print(handshake["decision"])
 print(handshake["reasons"])
 ```
+
+## LUKSO root-of-trust adapter
+
+Use the adapter when a LUKSO Universal Profile should act as one authority source, while NORNR still owns mandate, policy decision, counterparty scope and audit export:
+
+```python
+from agentpay import LuksoIdentityAdapter, NornrClient
+
+client = NornrClient(base_url="https://nornr.com", api_key="...")
+adapter = LuksoIdentityAdapter(client)
+
+identity = adapter.normalize_identity(
+    {
+        "universalProfileAddress": "0x1111111111111111111111111111111111111111",
+        "keyManagerAddress": "0x2222222222222222222222222222222222222222",
+        "chainId": "42",
+        "network": "lukso",
+        "profileMetadata": {
+            "name": "NORNR Research Worker",
+        },
+        "controllers": [
+            {
+                "address": "0x3333333333333333333333333333333333333333",
+                "permissions": ["CALL", "SUPER_CALL"],
+            }
+        ],
+    }
+)
+
+binding = adapter.build_binding(
+    identity,
+    mandate={"scopeLabel": "research procurement lane"},
+    policy_decision={"policyId": "research-safe", "decisionMode": "review_required"},
+    counterparty_scope={"allowedCounterparties": ["openai"], "reviewRequiredAboveUsd": 25},
+)
+
+print(binding.to_dict())
+```
+
+This keeps the split explicit:
+
+- LUKSO proves who can hold authority on-chain
+- NORNR still decides what clears in business context
+- the output is a portable binding packet around the canonical NORNR trust manifest, not a replacement for it
 
 ## Agent resume / verified profile
 
@@ -1221,9 +1315,16 @@ If your CrewAI integration already has a task config object, use `create_crewai_
 If you want provider-native entrypoints instead of the generic wrappers:
 
 ```python
-from agentpay import wrap_anthropic_client, wrap_openai_client
+from agentpay import (
+    create_spend_aware_anthropic_client,
+    create_spend_aware_openai_client,
+    wrap_anthropic_client,
+    wrap_openai_client,
+)
 ```
 
+- `create_spend_aware_openai_client(...)` is the thinnest NORNR ingress for existing OpenAI-style code when the immediate need is a max-spend wrapper with a clean upgrade path
+- `create_spend_aware_anthropic_client(...)` does the same for Anthropic-style `messages`
 - `wrap_openai_client(...)` is the shortest path for OpenAI-style `responses` and `chat.completions`
 - `wrap_anthropic_client(...)` is the shortest path for Anthropic-style `messages`
 - `wrap(...)` and `wrap_async(...)` still exist for mixed or custom provider SDKs

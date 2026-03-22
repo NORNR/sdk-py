@@ -87,7 +87,7 @@ class McpTool:
 TOOL_DEFINITIONS: tuple[McpToolDefinition, ...] = (
     McpToolDefinition(
         name="nornr.check_spend",
-        description="Dry-run a governed spend decision before the agent commits to a paid action.",
+        description="Dry-run one NORNR decision and return a basis such as review required, mandate gap, counterparty risk, proof risk or process risk before a consequential local tool call commits.",
         input_schema={
             "type": "object",
             "properties": {
@@ -102,7 +102,7 @@ TOOL_DEFINITIONS: tuple[McpToolDefinition, ...] = (
     ),
     McpToolDefinition(
         name="nornr.request_spend",
-        description="Request or preview governed spend in NORNR before the downstream tool or provider is called.",
+        description="Request or preview one governed local-tool action in NORNR before the downstream tool, provider or vendor step is called, with the decision basis preserved for review and export.",
         input_schema={
             "type": "object",
             "properties": {
@@ -143,7 +143,7 @@ TOOL_DEFINITIONS: tuple[McpToolDefinition, ...] = (
     ),
     McpToolDefinition(
         name="nornr.pending_approvals",
-        description="List pending approvals for this NORNR workspace.",
+        description="List queued review cases for this NORNR workspace.",
         input_schema={"type": "object", "properties": {}},
     ),
     McpToolDefinition(
@@ -153,27 +153,27 @@ TOOL_DEFINITIONS: tuple[McpToolDefinition, ...] = (
     ),
     McpToolDefinition(
         name="nornr.finance_packet",
-        description="Return the current finance packet summary for the workspace.",
+        description="Return the current finance packet summary for the workspace so local-originated actions still land in one close-ready packet.",
         input_schema={"type": "object", "properties": {}},
     ),
     McpToolDefinition(
         name="nornr.weekly_review",
-        description="Return the weekly review summary for the governed workspace.",
+        description="Return the weekly review summary for the governed workspace, including local MCP-originated actions.",
         input_schema={"type": "object", "properties": {}},
     ),
     McpToolDefinition(
         name="nornr.intent_timeline",
-        description="Return the recent governed intent timeline for the workspace.",
+        description="Return the recent governed intent timeline for the workspace so local tool actions stay attributable.",
         input_schema={"type": "object", "properties": {}},
     ),
     McpToolDefinition(
         name="nornr.anomaly_inbox",
-        description="Return open anomaly signals for the current NORNR workspace.",
+        description="Return open anomaly and drift signals for the current NORNR workspace.",
         input_schema={"type": "object", "properties": {}},
     ),
     McpToolDefinition(
         name="nornr.policy_simulation",
-        description="Run a policy-pack simulation for a template or candidate pack before rollout.",
+        description="Run a policy-pack simulation for a template or candidate pack before rollout, especially for consequential local tools.",
         input_schema={
             "type": "object",
             "properties": {
@@ -185,7 +185,7 @@ TOOL_DEFINITIONS: tuple[McpToolDefinition, ...] = (
     ),
     McpToolDefinition(
         name="nornr.review_bundle",
-        description="Return one bundled operator view of pending approvals, anomalies, timeline, and finance posture.",
+        description="Return one bundled operator view of queued review, anomaly posture, timeline and finance posture for consequential MCP tool execution.",
         input_schema={"type": "object", "properties": {}},
     ),
 )
@@ -207,7 +207,7 @@ def list_mcp_resources() -> list[dict[str, Any]]:
         {
             "uri": "nornr://finance-packet",
             "name": "Finance Packet",
-            "description": "Current finance packet attached to the governed workspace.",
+            "description": "Current finance packet attached to the governed workspace, including local MCP-originated actions.",
             "mimeType": "application/json",
         },
         {
@@ -225,25 +225,31 @@ def list_mcp_resources() -> list[dict[str, Any]]:
         {
             "uri": "nornr://pending-approvals",
             "name": "Pending Approvals",
-            "description": "Pending approval queue for the governed workspace.",
+            "description": "Queued review queue for the governed workspace.",
             "mimeType": "application/json",
         },
         {
             "uri": "nornr://anomaly-inbox",
             "name": "Anomaly Inbox",
-            "description": "Open anomaly signals that may require operator review.",
+            "description": "Open anomaly and drift signals that may require operator review or recovery work.",
             "mimeType": "application/json",
         },
         {
             "uri": "nornr://policy-workbench",
-            "name": "Policy Workbench",
-            "description": "Current policy workbench state and rollout guidance.",
+            "name": "Policy Replay Workbench",
+            "description": "Current policy replay posture and rollout guidance for consequential local tools and other governed lanes.",
+            "mimeType": "application/json",
+        },
+        {
+            "uri": "nornr://review-bundle",
+            "name": "Review Bundle",
+            "description": "Bundled approvals, anomalies, timeline and finance posture for one governed review path, including MCP-originated actions.",
             "mimeType": "application/json",
         },
         {
             "uri": "nornr://finance-close",
             "name": "Finance Close",
-            "description": "Finance-close oriented bundle combining finance packet, weekly review, and monthly statement.",
+            "description": "Finance-close oriented bundle combining finance packet, weekly review and monthly statement for one governed trail.",
             "mimeType": "application/json",
         },
     ]
@@ -253,12 +259,12 @@ def list_mcp_prompts() -> list[dict[str, Any]]:
     return [
         {
             "name": "nornr.operator-guide",
-            "description": "Guide an operator through approval, anomaly, and audit review before allowing a risky action to proceed.",
+            "description": "Guide an operator through queued review, anomaly posture and audit checks before allowing a consequential local tool action to proceed.",
             "arguments": [],
         },
         {
             "name": "nornr.policy-simulation",
-            "description": "Explain how to simulate and review a policy pack before rollout.",
+            "description": "Explain how to simulate and review a policy pack before rollout for consequential local tools.",
             "arguments": [{"name": "template_id", "required": False}],
         },
         {
@@ -273,8 +279,9 @@ def get_mcp_prompt(name: str, arguments: Mapping[str, Any] | None = None) -> dic
     args = dict(arguments or {})
     if name == "nornr.operator-guide":
         text = (
-            "Review the approval queue, anomaly signals, and timeline before allowing the action to continue. "
-            "If the action is unusual, route it to a human. Keep the finance packet and audit export attached."
+            "Review the queued cases, anomaly signals and timeline before allowing the action to continue. "
+            "If NORNR returns review required, counterparty risk, proof risk or process risk, keep the action in review until that basis is resolved. "
+            "Keep the finance packet and audit export attached to the same governed trail."
         )
     elif name == "nornr.policy-simulation":
         template_id = args.get("template_id") or "template_id"
@@ -486,6 +493,11 @@ class NornrMcpServer:
             "server": {
                 "name": self.server_name,
                 "version": self.version,
+            },
+            "defaults": {
+                "recommendedPolicyPackId": "mcp-local-tools-guarded",
+                "rolloutMode": "shadow",
+                "firstLane": "one consequential local tool lane",
             },
             "capabilities": {
                 "tools": self.list_tools(),

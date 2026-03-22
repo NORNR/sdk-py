@@ -11,6 +11,7 @@ from .langgraph import nornr_state_reducer, record_decision, state_business_cont
 from .mcp import create_mcp_server, create_mcp_tools
 from .pydanticai import NornrDeps, create_pydanticai_tools
 from .templates import scenario_templates
+from .wrappers import create_spend_aware_openai_client
 
 
 @dataclass(frozen=True)
@@ -93,7 +94,7 @@ class NornrKit:
         ]
         if self.recommended_policy_pack_id:
             steps.append(f"Replay the recommended policy pack `{self.recommended_policy_pack_id}` in shadow mode first.")
-        steps.append("Run one governed action and verify the approval/audit trail.")
+        steps.append("Run one governed action and verify the returned decision basis, review path and audit export.")
         return steps
 
     def scaffold_config(self) -> dict[str, Any]:
@@ -109,15 +110,30 @@ class NornrKit:
 def create_openai_agents_kit(wallet: Wallet) -> NornrKit:
     return NornrKit(
         name="openai-agents",
-        summary="Govern paid tool calls inside OpenAI Agents SDK flows without building custom approval tools first.",
+        summary="Govern one consequential tool lane inside OpenAI Agents SDK flows without building custom approval tools first.",
         recommended_policy_pack_id="research-safe",
-        quickstart="Use the generated OpenAI Agents tools, then route higher-spend cases into NORNR before the provider call fires.",
+        quickstart="Use the generated OpenAI Agents tools, then let NORNR return one clear decision basis before the consequential provider call fires.",
         components={
             "wallet": wallet,
             "tools": create_openai_agents_tools(wallet),
             "examples": ["openai_agents_sdk_wallet.py", "wrap_openai_client.py"],
         },
         scenarios=("research buyer", "incident copilot", "customer escalation"),
+    )
+
+
+def create_provider_wrapper_kit(wallet: Wallet) -> NornrKit:
+    return NornrKit(
+        name="provider-wrapper",
+        summary="Wrap one existing provider client with a thin NORNR spend-aware ingress before you widen into runtime, MCP or browser governance.",
+        recommended_policy_pack_id="research-safe",
+        quickstart="Use one spend-aware wrapper for the first provider lane, then upgrade the consequential path into a governed runtime or MCP lane once the team wants review, proof and finance-safe exports on the same path.",
+        components={
+            "wallet": wallet,
+            "openaiFactory": create_spend_aware_openai_client,
+            "examples": ["21_spend_aware_wrapper.py", "wrap_openai_client.py"],
+        },
+        scenarios=("existing provider client", "openai wrapper", "cost ingress"),
     )
 
 
@@ -141,9 +157,9 @@ def create_pydanticai_kit(wallet: Wallet, *, business_context: dict[str, Any] | 
 def create_langgraph_kit(wallet: Wallet) -> NornrKit:
     return NornrKit(
         name="langgraph",
-        summary="Treat NORNR decisions as first-class LangGraph state so approvals, payment-intent IDs and last decision survive the graph.",
+        summary="Treat NORNR decisions as first-class LangGraph state so one approval branch, payment-intent IDs and the last decision basis survive the graph.",
         recommended_policy_pack_id="browser-ops-guarded",
-        quickstart="Use state_context(...) before paid nodes and record_decision(...) after them so the graph stays replay- and approval-aware.",
+        quickstart="Use state_context(...) before consequential nodes and record_decision(...) after them so the graph stays replay-, review- and reason-aware.",
         components={
             "wallet": wallet,
             "stateReducer": nornr_state_reducer,
@@ -186,9 +202,9 @@ def create_mcp_kit(
     server = create_mcp_server(wallet, server_name=server_name)
     return NornrKit(
         name="mcp",
-        summary="Expose NORNR as a local MCP server so Claude Desktop, Cursor or any MCP client gets a spend-control layer without custom code.",
+        summary="Expose NORNR as the default MCP control server so Claude Desktop, Cursor or another local agent gets one decision basis, queued review and finance-safe exports without a bespoke wrapper.",
         recommended_policy_pack_id="mcp-local-tools-guarded",
-        quickstart="Run `nornr mcp serve`, drop the generated Claude Desktop config into your MCP client, then let local agents ask NORNR before paid actions.",
+        quickstart="Run `nornr mcp serve`, drop the generated config into Claude Desktop, Cursor or another MCP client, start from `mcp-local-tools-guarded`, then let local agents ask NORNR for one clear decision basis before consequential tool use.",
         components={
             "wallet": wallet,
             "server": server,
@@ -203,6 +219,7 @@ def create_mcp_kit(
 
 def create_framework_kits(wallet: Wallet) -> list[NornrKit]:
     return [
+        create_provider_wrapper_kit(wallet),
         create_openai_agents_kit(wallet),
         create_pydanticai_kit(wallet),
         create_langgraph_kit(wallet),

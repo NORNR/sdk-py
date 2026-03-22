@@ -674,6 +674,8 @@ class KillSwitchRecord(RecordModel):
     id: str | None
     label: str | None
     enabled: bool
+    status: str | None
+    mode: str | None
     scope: dict[str, Any]
     _raw: dict[str, Any] = field(repr=False)
 
@@ -683,8 +685,13 @@ class KillSwitchRecord(RecordModel):
         return cls(
             id=raw.get("id"),
             label=raw.get("label"),
-            enabled=bool(raw.get("enabled")),
-            scope=dict(raw.get("scope") or {}),
+            enabled=bool(raw.get("enabled")) or raw.get("status") == "active",
+            status=raw.get("status"),
+            mode=raw.get("mode"),
+            scope=dict(raw.get("scope") or {
+                "type": raw.get("scopeType"),
+                "value": raw.get("scopeValue"),
+            }),
             _raw=raw,
         )
 
@@ -861,7 +868,9 @@ class ComplianceRecord(RecordModel):
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any] | None) -> "ComplianceRecord":
         raw = dict(payload or {})
-        kill_switches = raw.get("killSwitches")
+        emergency_controls_raw = raw.get("emergencyControls")
+        emergency_controls = dict(emergency_controls_raw) if isinstance(emergency_controls_raw, Mapping) else {}
+        kill_switches = raw.get("killSwitches") or emergency_controls.get("killSwitches")
         approval_chains = raw.get("approvalChains")
         hardware_bindings = raw.get("hardwareBindings")
         return cls(

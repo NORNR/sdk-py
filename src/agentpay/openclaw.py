@@ -287,16 +287,25 @@ def render_openclaw_skill_markdown(
 ) -> str:
     return f"""---
 name: {skill_name}
-description: Put policy before paid actions, require approval for risky autonomous actions, and keep a finance-ready audit trail.
-homepage: https://github.com/NORNR/sdk-py
-metadata: {{"openclaw":{{"homepage":"https://github.com/NORNR/sdk-py","primaryEnv":"NORNR_API_KEY","requires":{{"env":["NORNR_API_KEY"],"anyBins":["python","python3"]}}}}}}
+description: The control layer before consequential MCP and OpenClaw execution: approve, queue or block before local tool use turns into spend or vendor action.
+homepage: https://github.com/NORNR/nornr-mcp-control
+metadata: {{"openclaw":{{"homepage":"https://github.com/NORNR/nornr-mcp-control","primaryEnv":"NORNR_API_KEY","requires":{{"env":["NORNR_API_KEY"],"anyBins":["python","python3"]}}}}}}
 ---
 
-# {skill_name}
+# NORNR MCP Control for OpenClaw
 
 ## What this skill is for
 
-Use NORNR as the control layer before an OpenClaw skill triggers a paid action, risky autonomous action, or any downstream step that should leave behind a finance-ready audit trail.
+Use NORNR as the control layer before an OpenClaw skill or local MCP-connected action triggers spend, vendor action or another consequential downstream step.
+
+Put policy before paid actions and keep a finance-ready audit trail afterward.
+
+The shortest correct reading is:
+
+- one local tool request becomes one NORNR intent
+- NORNR decides whether it is approved, queued or blocked
+- queued work enters named review with context attached
+- the same action still survives into proof, finance packet and audit export later
 
 ## When to use it
 
@@ -309,11 +318,47 @@ Use NORNR as the control layer before an OpenClaw skill triggers a paid action, 
 
 - `python -m pip install -r requirements.txt`
 
-## Required environment
+## Hello world
+
+1. Set `NORNR_API_KEY`.
+2. Run:
+   `python {script_name} preflight --action purchase --amount-usd 25 --counterparty openai --purpose "Run the paid research action"`
+3. If NORNR returns `approved`, the autonomous action may proceed.
+4. If NORNR returns `approval_required` or `blocked`, stop the autonomous flow and route to review.
+
+## Copy-paste MCP / desktop config
+
+Use NORNR as the default control layer before consequential local tool execution clears:
+
+- Claude Desktop:
+  `nornr mcp claude-config --server-name nornr --agent-id openclaw-agent`
+- Cursor:
+  `nornr mcp cursor-config --server-name nornr --agent-id openclaw-agent`
+
+## Cursor rule
+
+Add this to `.cursorrules` if Cursor is allowed to use local tools through NORNR:
+
+```text
+Use NORNR as the control layer before consequential tool execution.
+Do not proceed with a paid, vendor-side or policy-sensitive action until NORNR returns approved or a named operator explicitly approves the queued intent.
+Treat queued, blocked, anomalous or review-required posture as a stop state for autonomous execution.
+```
+
+## Environment
+
+Only this variable is required:
 
 - `NORNR_API_KEY`
+
+These are optional:
+
 - `NORNR_BASE_URL` (optional, defaults to `https://nornr.com`)
 - `NORNR_AGENT_ID` or a stored NORNR login profile
+
+## Default policy pack for OpenClaw
+
+Start from `mcp-local-tools-guarded` when OpenClaw actions can trigger spend, vendor action or policy-sensitive tool execution. The point is not to invent a new OpenClaw policy language. It is to make NORNR the default control layer before autonomous execution.
 
 ## Recommended API key scope
 
@@ -334,6 +379,7 @@ Add these if you want the finance-close paths too:
 
 This skill delegates governance decisions to the official NORNR Python SDK, `agentpay`.
 
+- Public MCP package repo: `https://github.com/NORNR/nornr-mcp-control`
 - Install source: `requirements.txt`
 - Pinned PyPI package: `nornr-agentpay==0.1.0`
 - Local bridge: `{script_name}`
@@ -351,6 +397,23 @@ This skill delegates governance decisions to the official NORNR Python SDK, `age
 - `python {script_name} weekly-review`
 - `python {script_name} monthly-close --provider quickbooks`
 - `python {script_name} review-bundle --counterparty openai`
+
+## Why raw tool execution is not enough
+
+Raw OpenClaw or MCP tool execution exposes capability. NORNR adds the missing layer above capability:
+
+- should this action clear under the active mandate
+- who reviews it when it should queue
+- what finance or audit can inspect afterward
+
+## What happens after queued
+
+Queued does not mean "probably yes later". It means:
+
+1. stop the autonomous action
+2. inspect `review-bundle`, `anomalies` or `timeline`
+3. let a named operator `approve` or `reject`
+4. carry the same action into `finance-packet`, `audit-export` or `monthly-close` later
 
 ## Operating rule
 
